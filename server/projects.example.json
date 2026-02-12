@@ -1,0 +1,27 @@
+{
+  "defaultProjectId": "reservewatch-sepolia",
+  "projects": [
+    {
+      "id": "reservewatch-sepolia",
+      "name": "ReserveWatch Demo (Sepolia)",
+      "receiverAddress": "0x324de0eb7fafa48302cc868098b92be99765bb87",
+      "liabilityTokenAddress": "0xd343e551a80cadd610f8d08763f7e3ecccca8841",
+      "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+      "explorerBaseUrl": "https://sepolia.etherscan.io",
+      "expectedForwarderAddress": "0x15fC6ae953E024d975e77382eEeC56A9101f9F88",
+      "maxReserveAgeS": 120,
+      "maxReserveMismatchRatio": 0.01
+    },
+    {
+      "id": "another-asset",
+      "name": "Another Asset (fill addresses)",
+      "receiverAddress": "",
+      "liabilityTokenAddress": "",
+      "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+      "explorerBaseUrl": "https://sepolia.etherscan.io",
+      "expectedForwarderAddress": "",
+      "maxReserveAgeS": 120,
+      "maxReserveMismatchRatio": 0.01
+    }
+  ]
+}

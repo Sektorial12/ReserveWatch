@@ -1,0 +1,11 @@
+{
+  "name": "reservewatch-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "solc": "^0.8.26",
+    "viem": "^2.21.0"
+  }
+}

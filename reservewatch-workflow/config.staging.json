@@ -1,0 +1,17 @@
+{
+  "schedule": "*/30 * * * * *",
+  "chainSelectorName": "ethereum-testnet-sepolia",
+  "supplyChainSelectorName": "ethereum-testnet-sepolia",
+  "attestationChainSelectorName": "ethereum-testnet-sepolia",
+  "receiverAddress": "0x946232d2627d4e16ee819e3a2251b302897815df",
+  "liabilityTokenAddress": "0x75a23797492d895047d5178b7456a9728d3c138b",
+  "supplyLiabilityTokenAddress": "0x75a23797492d895047d5178b7456a9728d3c138b",
+  "reserveUrlPrimary": "http://127.0.0.1:8787/reserve/source-a",
+  "reserveUrlSecondary": "http://127.0.0.1:8787/reserve/source-b",
+  "evmReadBlockTag": "finalized",
+  "evmReadFallbackToLatest": true,
+  "evmReadRetries": "1",
+  "minCoverageBps": "10000",
+  "gasLimit": "1000000",
+  "attestationVersion": "v2"
+}

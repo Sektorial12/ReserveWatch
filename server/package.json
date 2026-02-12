@@ -1,0 +1,13 @@
+{
+  "name": "reservewatch-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "viem": "^2.21.0"
+  }
+}

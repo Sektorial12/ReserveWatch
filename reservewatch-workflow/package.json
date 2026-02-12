@@ -1,0 +1,17 @@
+{
+  "name": "reservewatch-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node -e \"const fs=require('fs'); const path=require('path'); const dist=path.join('node_modules','@chainlink','cre-sdk-javy-plugin','dist'); const src=path.join(dist,'javy_chainlink_sdk.wasm'); const dst=path.join(dist,'javy-chainlink-sdk.plugin.wasm'); if(!fs.existsSync(src)) { console.error('Missing', src); process.exit(1); } if(fs.existsSync(dst)) process.exit(0); try { fs.symlinkSync('javy_chainlink_sdk.wasm', dst); } catch (e) { try { fs.copyFileSync(src, dst); } catch (e2) { console.error(e2?.message||String(e2)); process.exit(1); } }\""
+  },
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.0.2",
+    "viem": "^2.21.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
