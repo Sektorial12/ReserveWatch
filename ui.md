@@ -14,9 +14,11 @@ The UI is an operator console for an issuer’s risk/compliance team. It should 
 
 ## Core concepts surfaced in UI
 - Offchain reserves (multiple sources)
+- Offchain NAV (optional)
 - Onchain liabilities (token/vault supply)
 - Coverage ratio (bps) and policy threshold
 - Staleness / source mismatch
+- Incidents (operator warnings from external monitors)
 - Onchain attestation state (receiver contract)
 - Enforcement state (minting enabled/paused)
 
@@ -27,6 +29,7 @@ Purpose: single-pane-of-glass “what’s the health + enforcement status right 
 
 Components:
 - Health badge: HEALTHY | UNHEALTHY | DEGRADED | STALE
+- Incident banner/badge (optional): warning|critical
 - KPI cards:
   - Coverage bps vs min threshold
   - Minting status (enabled/paused)
@@ -35,11 +38,12 @@ Components:
 - Reserve sources table:
   - source id
   - reserveUsd
+  - navUsd (optional)
   - asOf timestamp
   - age
   - status (ok/stale/error)
 - Onchain panel:
-  - Receiver: lastAttestationHash, lastReserveUsd, lastLiabilitySupply, lastCoverageBps, lastAsOfTimestamp, minCoverageBps, mintingPaused
+  - Receiver: lastAttestationHash, lastReserveUsd, lastNavUsd (optional), lastLiabilitySupply, lastCoverageBps, lastAsOfTimestamp, minCoverageBps, mintingPaused
   - Token/Vault: totalSupply, mintingEnabled, guardian
 - Explorer links:
   - receiver address
@@ -55,7 +59,7 @@ Behavior:
 Purpose: show recent attestations and breaker events for credibility.
 
 Options:
-- If backend provides it: table of last N attestations (timestamp, coverage, status, txHash).
+- Table of last N attestations from `GET /api/history` (timestamp/asOfTimestamp, navUsd (if present), coverage, breakerTriggered, txHash/txUrl).
 - If not available yet: show “latest attestation only” plus links to explorer/event logs.
 
 ### 3) Settings (read-only in MVP is fine)
@@ -71,6 +75,9 @@ For hackathon/demo mode, include:
 - Toggle “Reserve API mode”: healthy/unhealthy
   - Calls `POST /admin/mode` with `{ "mode": "healthy" | "unhealthy" }`
 
+- Toggle incident banner (optional demo/operator feature)
+  - Calls `POST /admin/incident` with `{ "projectId": "...", "active": true|false, "severity": "warning"|"critical", "message": "..." }`
+
 In production, this toggle should be removed.
 
 ## API contract the UI expects
@@ -83,8 +90,14 @@ Recommended shape:
 {
   "mode": "healthy",
   "reserves": {
-    "primary": { "source": "source-a", "timestamp": 1700000000, "reserveUsd": "1200000" },
-    "secondary": { "source": "source-b", "timestamp": 1700000000, "reserveUsd": "1200000" }
+    "primary": { "source": "source-a", "timestamp": 1700000000, "reserveUsd": "1200000", "navUsd": "1195000" },
+    "secondary": { "source": "source-b", "timestamp": 1700000000, "reserveUsd": "1200000", "navUsd": "1195000" }
+  },
+  "incident": {
+    "active": false,
+    "severity": "warning",
+    "message": "",
+    "updatedAt": 1700000000
   },
   "onchain": {
     "rpcUrl": "https://...",
@@ -94,6 +107,7 @@ Recommended shape:
     "receiver": {
       "lastAttestationHash": "0x...",
       "lastReserveUsd": "...",
+      "lastNavUsd": "...",
       "lastLiabilitySupply": "...",
       "lastCoverageBps": "...",
       "lastAsOfTimestamp": "...",
@@ -123,6 +137,10 @@ Response:
 ```json
 { "mode": "healthy" }
 ```
+
+### `GET /incident/feed` (optional)
+Query param:
+- `?project=<id>`
 
 ## States & UX rules
 - Always show:
