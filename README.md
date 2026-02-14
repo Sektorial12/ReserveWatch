@@ -1,4 +1,4 @@
-# ReserveWatch
+# ReserveWatch (CRE Hackathon)
 
 ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Value (NAV) monitoring system for tokenized RWAs.
 
