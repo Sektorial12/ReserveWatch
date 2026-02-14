@@ -1,31 +1,125 @@
-# ReserveWatch (CRE Hackathon)
+# ReserveWatch
 
-ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Value (NAV) monitoring system for tokenized RWAs.
+> **Chainlink CRE Hackathon 2026**
 
-It uses Chainlink Runtime Environment (CRE) to orchestrate:
+Real-time Proof of Reserves monitoring with automatic onchain enforcement for tokenized assets.
 
-- Scheduled reserve checks (Cron Trigger)
-- External reserve data ingestion (HTTP Capability)
-- Onchain state reads (EVM Read Capability)
-- Onchain attestations and automated safeguards (EVM Write Capability)
+![ReserveWatch](https://img.shields.io/badge/Chainlink-CRE-blue) ![Solidity](https://img.shields.io/badge/Solidity-0.8.x-green) ![React](https://img.shields.io/badge/React-18-61dafb) ![Sepolia](https://img.shields.io/badge/Network-Sepolia-purple)
 
-## Target chain
-- Ethereum Sepolia (Chainlink CRE docs/templates default)
+## Overview
 
-## Repository layout
-- `reservewatch-workflow/`: CRE TypeScript workflow (simulation + onchain write)
-- `contracts/evm/`: Solidity consumer contract(s) that receive CRE reports via `onReport(bytes,bytes)`
-- `contracts/abi/`: TypeScript ABIs used by the workflow (Viem)
-- `server/`: Local reserve API used as an external data source for simulation (also serves the Console at `/console`)
+ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Value (NAV) monitoring system for tokenized RWAs. It uses **Chainlink Compute Runtime Environment (CRE)** to orchestrate automated reserve verification and enforcement.
 
-## Quick start (high level)
-1. Start the reserve API (`server/`)
-2. (Optional) Configure multi-project onboarding via `server/projects.json`
-3. Deploy contracts for simulation (use the Sepolia MockForwarder address)
-4. Update `reservewatch-workflow/config.staging.json` with deployed addresses (or use the deploy script which updates it automatically)
-5. Run the end-to-end demo runner (`scripts/demo.mjs`) to broadcast a healthy + unhealthy attestation
+### Key Features
 
-See `DEMO.md` for a step-by-step runbook (Console + demo runner + on-chain verification).
+- **📊 Multi-Source Verification** — Aggregate reserve data from multiple independent sources with cryptographic signature verification
+- **⚡ CRE-Powered Workflow** — Chainlink CRE fetches offchain reserves, computes coverage ratios, and writes attestations onchain
+- **🛡️ Automatic Circuit Breaker** — If reserves fall below threshold, minting is automatically paused to protect token holders
+
+### How It Works
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  1. Fetch       │    │  2. Compute     │    │  3. Attest      │    │  4. Enforce     │
+│  Reserves       │───▶│  Coverage       │───▶│  Onchain        │───▶│  Policy         │
+│                 │    │                 │    │                 │    │                 │
+│  CRE fetches    │    │  Calculate      │    │  Signed report  │    │  If coverage <  │
+│  from custodian │    │  reserves /     │    │  written to     │    │  threshold,     │
+│  APIs           │    │  liabilities    │    │  receiver       │    │  pause minting  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Workflow Engine | Chainlink CRE (Compute Runtime Environment) |
+| Smart Contracts | Solidity 0.8.x |
+| Network | Ethereum Sepolia |
+| Frontend | React 18 + Vite |
+| Server | Node.js + Express |
+
+## Repository Layout
+
+```
+ReserveWatch/
+├── console/                    # React + Vite operator console
+│   ├── src/
+│   │   ├── components/         # UI components (LandingPage, Tabs, etc.)
+│   │   ├── App.jsx             # Main application
+│   │   └── styles.css          # Dark theme styles
+│   └── package.json
+├── contracts/
+│   ├── evm/src/                # Solidity contracts
+│   │   ├── ReserveWatchReceiver.sol
+│   │   └── LiabilityToken.sol
+│   └── abi/                    # TypeScript ABIs for workflow
+├── reservewatch-workflow/      # CRE TypeScript workflow
+│   ├── main.ts                 # Workflow logic
+│   ├── config.staging.json     # Staging configuration
+│   └── workflow.yaml           # CRE workflow definition
+├── server/                     # API server + console hosting
+│   ├── index.js                # Express server
+│   ├── projects.json           # Project configuration
+│   └── public/                 # Built console assets
+├── docs/                       # Documentation
+│   ├── cre-research-notes.md
+│   └── contract-gaps.md
+└── scripts/                    # Demo and deployment scripts
+```
+
+## Target Chain
+- Ethereum Sepolia (Chainlink CRE default)
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+# Server
+cd server && npm install
+
+# Console (React frontend)
+cd console && npm install
+
+# Workflow
+cd reservewatch-workflow && npm install
+```
+
+### 2. Start the Server
+
+```bash
+cd server && npm start
+# Server runs at http://127.0.0.1:8787
+```
+
+### 3. Open the Console
+
+Navigate to: **http://127.0.0.1:8787/console**
+
+You'll see:
+1. **Landing Page** — Project overview and "Enter Dashboard" button
+2. **Dashboard** — Live status, tabs for Overview/Sources/Onchain/History/Settings
+
+### 4. Deploy Contracts (Optional)
+
+```bash
+cd contracts/evm && node deploy.js
+```
+
+This deploys `LiabilityToken` and `ReserveWatchReceiver` to Sepolia and updates config files.
+
+### 5. Run CRE Workflow
+
+```bash
+# End-to-end demo (recommended)
+node scripts/demo.mjs --broadcast --api http://127.0.0.1:8787 --project reservewatch-sepolia
+
+# Manual single run
+cre workflow simulate reservewatch-workflow --target staging-settings --broadcast --env .env
+```
+
+See `DEMO.md` for a detailed step-by-step runbook.
 
 ## Local run (simulation)
 
@@ -100,7 +194,36 @@ From the repo root:
 If you have a proxy configured in your shell environment, you may need:
 - `curl --noproxy '*' ...`
 
-## Files that use Chainlink/CRE
-- `reservewatch-workflow/main.ts`
-- `reservewatch-workflow/workflow.yaml`
-- `project.yaml`
+## Chainlink CRE Integration
+
+| File | Purpose |
+|------|---------|
+| `reservewatch-workflow/main.ts` | Core workflow logic (fetch, compute, attest) |
+| `reservewatch-workflow/workflow.yaml` | CRE workflow configuration |
+| `project.yaml` | RPC and chain configuration |
+
+## Smart Contracts
+
+| Contract | Description |
+|----------|-------------|
+| `ReserveWatchReceiver.sol` | Receives attestations, enforces circuit breaker |
+| `LiabilityToken.sol` | ERC-20 token with guardian-controlled minting |
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/console` | GET | Operator console UI |
+| `/api/status` | GET | Current health and onchain state |
+| `/api/history` | GET | Recent attestation events |
+| `/api/projects` | GET | List configured projects |
+| `/admin/mode` | POST | Toggle healthy/unhealthy mode (demo) |
+| `/admin/incident` | POST | Set incident alert (demo) |
+
+## License
+
+MIT
+
+---
+
+Built for **Chainlink CRE Hackathon 2026**
