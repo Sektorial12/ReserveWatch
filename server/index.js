@@ -737,210 +737,25 @@ app.get("/api/history", async (req, res) => {
   }
 })
 
-app.get(["/", "/console"], (req, res) => {
-  res.type("html").send(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>ReserveWatch Console</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 18px; }
-      .wrap { max-width: 1100px; margin: 0 auto; }
-      h1 { margin: 0 0 6px 0; font-size: 20px; }
-      .sub { opacity: 0.7; margin-bottom: 12px; }
-      .row { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 14px; }
-      button { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(127,127,127,0.35); background: transparent; cursor: pointer; }
-      pre { margin: 0; padding: 12px; border-radius: 12px; border: 1px solid rgba(127,127,127,0.25); overflow: auto; }
-      .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,0.35); font-size: 12px; }
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <h1>ReserveWatch Console</h1>
-      <div class="sub">Polling <code>/api/status</code> (placeholder UI — your teammate can replace)</div>
-      <div class="row">
-        <label class="pill">project <select id="project"></select></label>
-        <span class="pill" id="health">loading...</span>
-        <span class="pill" id="incident"></span>
-        <span class="pill" id="metrics"></span>
-        <span class="pill" id="enforcement"></span>
-        <span class="pill" id="updated"></span>
-      </div>
-      <div class="row">
-        <span class="pill" id="reasons"></span>
-      </div>
-      <div class="row">
-        <button id="btnHealthy">Set reserve API: healthy</button>
-        <button id="btnUnhealthy">Set reserve API: unhealthy</button>
-        <button id="btnRefresh">Refresh</button>
-      </div>
-      <div class="row" id="links"></div>
-      <pre id="history"></pre>
-      <pre id="json"></pre>
-    </div>
+const consoleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./public")
+const consoleIndexPath = path.join(consoleRoot, "index.html")
+const legacyConsolePath = path.join(consoleRoot, "console.html")
 
-    <script>
-      const el = (id) => document.getElementById(id)
-
-      const fetchJson = async (url, { timeoutMs = 8000, retries = 1 } = {}) => {
-        let lastErr
-        for (let attempt = 0; attempt <= retries; attempt++) {
-          const controller = new AbortController()
-          const timeout = setTimeout(() => controller.abort(), timeoutMs)
-          try {
-            const r = await fetch(url, { signal: controller.signal })
-            if (!r.ok) {
-              const t = await r.text().catch(() => '')
-              throw new Error('HTTP ' + r.status + (t ? (' ' + t) : ''))
-            }
-            return await r.json()
-          } catch (err) {
-            lastErr = err
-            if (attempt === retries) throw err
-          } finally {
-            clearTimeout(timeout)
-          }
-        }
-        throw lastErr || new Error('fetch failed')
-      }
-
-      const getProjectFromUrl = () => {
-        const u = new URL(window.location.href)
-        return u.searchParams.get('project')
-      }
-
-      const setProjectInUrl = (projectId) => {
-        const u = new URL(window.location.href)
-        if (projectId) u.searchParams.set('project', projectId)
-        else u.searchParams.delete('project')
-        window.history.replaceState({}, '', u.toString())
-      }
-
-      const loadProjects = async () => {
-        const sel = el('project')
-        try {
-          const j = await fetchJson('/api/projects', { timeoutMs: 6000, retries: 1 })
-          const projects = Array.isArray(j?.projects) ? j.projects : []
-          const defaultProjectId = typeof j?.defaultProjectId === 'string' ? j.defaultProjectId : null
-          const current = getProjectFromUrl()
-          sel.innerHTML = projects.map((p) => {
-            const id = String(p.id)
-            const name = String(p.name || p.id)
-            const selected = current === id ? ' selected' : ''
-            return '<option value="' + id.replaceAll('"', '%22') + '"' + selected + '>' + name + '</option>'
-          }).join('')
-          if (!current) {
-            if (defaultProjectId && projects.some((p) => p?.id === defaultProjectId)) setProjectInUrl(defaultProjectId)
-            else if (projects[0]?.id) setProjectInUrl(projects[0].id)
-          }
-        } catch {
-          sel.innerHTML = '<option value="">(projects unavailable)</option>'
-        }
-      }
-
-      const setMode = async (mode) => {
-        await fetch('/admin/mode', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode }),
-        })
-        await refresh()
-      }
-
-      const refresh = async () => {
-        const t0 = Date.now()
-        const project = getProjectFromUrl()
-        let j
-        try {
-          j = await fetchJson('/api/status' + (project ? ('?project=' + encodeURIComponent(project)) : ''), { timeoutMs: 12_000, retries: 1 })
-        } catch (err) {
-          el('health').textContent = 'ERROR'
-          el('enforcement').textContent = ''
-          el('updated').textContent = 'error'
-          el('reasons').textContent = String(err?.message || err)
-          el('links').innerHTML = ''
-          el('history').textContent = ''
-          el('json').textContent = JSON.stringify({ error: String(err?.message || err) }, null, 2)
-          return
-        }
-
-        const links = j?.links || {}
-        let historyLastTxUrl = null
-
-        try {
-          const hj = await fetchJson('/api/history' + (project ? ('?project=' + encodeURIComponent(project) + '&limit=10') : '?limit=10'), { timeoutMs: 12_000, retries: 0 })
-          const events = Array.isArray(hj?.events) ? hj.events : []
-          historyLastTxUrl = events[0]?.txUrl || null
-          const lines = events.map((e) => {
-            const ts = e?.asOfTimestamp ? ('asOf=' + e.asOfTimestamp) : ''
-            const nav = e?.navUsd ? ('navUsd=' + e.navUsd) : ''
-            const cov = e?.coverageBps ? ('coverageBps=' + e.coverageBps) : ''
-            const br = e?.breakerTriggered === true ? 'breaker=true' : (e?.breakerTriggered === false ? 'breaker=false' : '')
-            const tx = e?.txUrl ? e.txUrl : (e?.transactionHash || '')
-            return [ts, nav, cov, br, tx].filter(Boolean).join(' ')
-          })
-          el('history').textContent = lines.length ? lines.join('\n') : ''
-        } catch {
-          el('history').textContent = 'history unavailable'
-        }
-
-        const paused = j?.onchain?.receiver?.mintingPaused
-        const enabled = j?.onchain?.token?.mintingEnabled
-        const coverage = Number(j?.onchain?.receiver?.lastCoverageBps || NaN)
-        const min = Number(j?.onchain?.receiver?.minCoverageBps || NaN)
-        const stale = Boolean(j?.onchain?.error)
-        const reasons = Array.isArray(j?.derived?.reasons) ? j.derived.reasons : []
-        const incident = j?.incident || null
-        const reserveUsd = j?.reserves?.primary?.reserveUsd
-        const navUsd = j?.reserves?.primary?.navUsd
-
-        let badge = 'HEALTHY'
-        if (typeof j?.derived?.status === 'string') badge = j.derived.status
-        else if (stale) badge = 'STALE'
-        else if (paused === true || (Number.isFinite(coverage) && Number.isFinite(min) && coverage < min)) badge = 'UNHEALTHY'
-
-        el('health').textContent = badge
-        if (incident?.active) el('incident').textContent = 'incident=' + (incident?.severity || 'warning')
-        else el('incident').textContent = ''
-        el('metrics').textContent = 'reserveUsd=' + String(reserveUsd ?? '') + ' navUsd=' + String(navUsd ?? '')
-        el('enforcement').textContent = 'mintingPaused=' + paused + ' mintingEnabled=' + enabled
-        el('updated').textContent = 'updated ' + (Math.round((Date.now() - t0) / 10) / 100) + 's ago'
-        el('reasons').textContent = reasons.length ? ('reasons=' + reasons.join(',')) : ''
-
-        if (!links.lastTx && historyLastTxUrl) links.lastTx = historyLastTxUrl
-        const linkItems = [
-          ['receiver', links.receiver],
-          ['token', links.token],
-          ['guardian', links.guardian],
-          ['receiverOwner', links.receiverOwner],
-          ['tokenOwner', links.tokenOwner],
-          ['forwarder', links.forwarder],
-          ['lastTx', links.lastTx],
-        ].filter(([, u]) => typeof u === 'string' && u.length)
-
-        el('links').innerHTML = linkItems.map(([label, url]) => {
-          const safe = String(url).replaceAll('"', '%22')
-          return '<a href="' + safe + '" target="_blank" rel="noreferrer">' + label + '</a>'
-        }).join(' ')
-
-        el('json').textContent = JSON.stringify(j, null, 2)
-      }
-
-      el('btnHealthy').onclick = () => setMode('healthy')
-      el('btnUnhealthy').onclick = () => setMode('unhealthy')
-      el('btnRefresh').onclick = () => refresh()
-      el('project').onchange = () => {
-        setProjectInUrl(el('project').value)
-        refresh()
-      }
-
-      loadProjects().then(refresh)
-      setInterval(refresh, 8000)
-    </script>
-  </body>
-</html>`)
+app.get("/", (req, res) => {
+  const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""
+  res.redirect(`/console${query}`)
 })
+
+app.get("/console", (req, res) => {
+  if (fs.existsSync(consoleIndexPath)) {
+    res.sendFile(consoleIndexPath)
+    return
+  }
+
+  res.sendFile(legacyConsolePath)
+})
+
+app.use("/console", express.static(consoleRoot))
 
 const port = Number(process.env.PORT || 8787)
 app.listen(port, "127.0.0.1", () => {
