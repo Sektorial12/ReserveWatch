@@ -30,8 +30,8 @@ export default function SourcesTab({
 }) {
   return (
     <div className="tab-content">
-      <h2 className="tab-title">Reserve Sources</h2>
-      <p className="tab-subtitle">Primary and secondary data ingestion</p>
+      <h2 className="tab-title">Connectors</h2>
+      <p className="tab-subtitle">Connected data sources and incident feed</p>
 
       <div className="card">
         <table className="data-table">

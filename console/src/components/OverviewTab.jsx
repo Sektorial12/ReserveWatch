@@ -31,8 +31,8 @@ export default function OverviewTab({ derived, receiver, token, mode }) {
 
   return (
     <div className="tab-content">
-      <h2 className="tab-title">Overview</h2>
-      <p className="tab-subtitle">Key metrics and current state summary</p>
+      <h2 className="tab-title">Live Monitor</h2>
+      <p className="tab-subtitle">Current health and key metrics</p>
 
       <div className="kpi-grid">
         {kpis.map((kpi) => (

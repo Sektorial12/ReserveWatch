@@ -14,8 +14,8 @@ const formatUnix = (unixS) => {
 export default function HistoryTab({ history }) {
   return (
     <div className="tab-content">
-      <h2 className="tab-title">Attestation History</h2>
-      <p className="tab-subtitle">Recent attestation events from receiver contract logs</p>
+      <h2 className="tab-title">Audit</h2>
+      <p className="tab-subtitle">Recent attestation events and onchain proof trail</p>
 
       <div className="card">
         <table className="data-table">

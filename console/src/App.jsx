@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import LandingPage from "./components/LandingPage"
 import Tabs from "./components/Tabs"
 import HeroSection from "./components/HeroSection"
+import ProjectsModal from "./components/ProjectsModal"
 import OverviewTab from "./components/OverviewTab"
-import SourcesTab from "./components/SourcesTab"
+import ConnectorsTab from "./components/ConnectorsTab"
 import OnchainTab from "./components/OnchainTab"
 import HistoryTab from "./components/HistoryTab"
 import SettingsTab from "./components/SettingsTab"
@@ -12,11 +13,11 @@ import SettingsTab from "./components/SettingsTab"
 const POLL_MS = 8000
 
 const TABS = [
-  { id: "overview", label: "Overview" },
-  { id: "sources", label: "Sources" },
+  { id: "monitor", label: "Live Monitor" },
+  { id: "connectors", label: "Connectors" },
+  { id: "policy", label: "Policy" },
   { id: "onchain", label: "Onchain" },
-  { id: "history", label: "History" },
-  { id: "settings", label: "Settings" },
+  { id: "audit", label: "Audit" },
 ]
 
 const fetchJson = async (url, init = {}) => {
@@ -64,20 +65,95 @@ const formatInt = (value) => {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n)
 }
 
+const DRAFT_PROJECTS_KEY = "reservewatch:draftProjects:v1"
+const DRAFT_CONNECTORS_KEY = "reservewatch:draftConnectors:v1"
+
+const readDraftProjects = () => {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_PROJECTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((p) => p && typeof p.id === "string") : []
+  } catch {
+    return []
+  }
+}
+
+const writeDraftProjects = (projects) => {
+  try {
+    window.localStorage.setItem(DRAFT_PROJECTS_KEY, JSON.stringify(projects))
+  } catch {
+    return
+  }
+}
+
+const readDraftConnectors = () => {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_CONNECTORS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((c) => c && typeof c.id === "string" && typeof c.projectId === "string")
+      : []
+  } catch {
+    return []
+  }
+}
+
+const writeDraftConnectors = (connectors) => {
+  try {
+    window.localStorage.setItem(DRAFT_CONNECTORS_KEY, JSON.stringify(connectors))
+  } catch {
+    return
+  }
+}
+
+const normalizeConnectorId = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+}
+
+const uniqueConnectorId = (baseId, used) => {
+  const cleanBase = normalizeConnectorId(baseId)
+  if (!cleanBase) return ""
+  if (!used.has(cleanBase)) return cleanBase
+
+  for (let i = 2; i < 1000; i += 1) {
+    const suffix = `-${i}`
+    const maxLen = 63 - suffix.length
+    const head = cleanBase.slice(0, Math.max(2, maxLen))
+    const candidate = `${head}${suffix}`
+    if (!used.has(candidate)) return candidate
+  }
+
+  return ""
+}
+
 export default function App() {
   const [showLanding, setShowLanding] = useState(true)
   const [busy, setBusy] = useState(false)
   const [projects, setProjects] = useState([])
+  const [draftProjects, setDraftProjects] = useState(() => readDraftProjects())
+  const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
+  const [projectsModalOpen, setProjectsModalOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState([])
   const [error, setError] = useState("")
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null)
   const [incidentMessage, setIncidentMessage] = useState("")
-  const [activeTab, setActiveTab] = useState("overview")
+  const [activeTab, setActiveTab] = useState("monitor")
 
   const pollRef = useRef(null)
   const busyRef = useRef(false)
+  const draftProjectsRef = useRef(draftProjects)
+
+  useEffect(() => {
+    draftProjectsRef.current = draftProjects
+  }, [draftProjects])
 
   const derived = status?.derived || {}
   const receiver = status?.onchain?.receiver || {}
@@ -101,12 +177,41 @@ export default function App() {
     }))
   }, [status, derived])
 
+  const hasAnyProjects = projects.length > 0 || draftProjects.length > 0
+
+  const selectedDraft = useMemo(() => {
+    if (!projectId) return null
+    return draftProjects.find((p) => p.id === projectId) || null
+  }, [draftProjects, projectId])
+
+  const selectedLive = useMemo(() => {
+    if (!projectId) return null
+    return projects.find((p) => p.id === projectId) || null
+  }, [projects, projectId])
+
+  const isLiveProject = useMemo(() => {
+    if (!projectId) return false
+    return projects.some((p) => p.id === projectId)
+  }, [projects, projectId])
+
+  const projectDisplayName = useMemo(() => {
+    if (selectedLive?.name) return selectedLive.name
+    if (selectedDraft?.name) return selectedDraft.name
+    return projectId || ""
+  }, [projectId, selectedLive, selectedDraft])
+
+  const rpcHealthy = !status?.onchain?.error
+  const rpcBlock = status?.onchain?.blockNumber
+
   const loadProjects = useCallback(async () => {
     const data = await fetchJson("/api/projects", { timeoutMs: 8000 })
     const allProjects = Array.isArray(data?.projects) ? data.projects : []
-    const defaultId = data?.defaultProjectId || allProjects[0]?.id || null
     const urlProject = fromUrlProject()
-    const selected = urlProject || defaultId
+
+    const draftIds = (draftProjectsRef.current || []).map((p) => p.id)
+    const allIds = new Set([...allProjects.map((p) => p.id), ...draftIds].filter(Boolean))
+    const defaultId = data?.defaultProjectId || allProjects[0]?.id || draftIds[0] || null
+    const selected = urlProject && allIds.has(urlProject) ? urlProject : defaultId
 
     setProjects(allProjects)
     setProjectId(selected)
@@ -116,6 +221,20 @@ export default function App() {
   const loadData = useCallback(
     async (overrideProjectId = null) => {
       const activeProjectId = overrideProjectId || projectId
+      const live = activeProjectId ? projects.some((p) => p.id === activeProjectId) : false
+
+      if (!activeProjectId || !live) {
+        setStatus(null)
+        setHistory([])
+        setLastUpdatedAt(Date.now())
+        setError(
+          activeProjectId
+            ? `Draft project '${activeProjectId}' is not deployed. Use Projects → Export to deploy it.`
+            : "No project selected"
+        )
+        return
+      }
+
       const query = activeProjectId ? `?project=${encodeURIComponent(activeProjectId)}` : ""
 
       const [statusRes, historyRes] = await Promise.all([
@@ -128,7 +247,7 @@ export default function App() {
       setLastUpdatedAt(Date.now())
       setError("")
     },
-    [projectId]
+    [projectId, projects]
   )
 
   const withAction = useCallback(
@@ -170,13 +289,18 @@ export default function App() {
     void withAction(async () => {
       writeUrlProject(projectId)
     }, projectId)
-  }, [projectId, withAction])
+  }, [projectId, isLiveProject, withAction])
 
   useEffect(() => {
     if (!projectId) return
 
     if (pollRef.current) {
       clearInterval(pollRef.current)
+    }
+
+    if (!isLiveProject) {
+      pollRef.current = null
+      return
     }
 
     pollRef.current = setInterval(() => {
@@ -186,26 +310,83 @@ export default function App() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [projectId, withAction])
+  }, [projectId, isLiveProject, withAction])
 
   const sendMode = useCallback(async (mode) => {
+    if (!isLiveProject) throw new Error("Mode control is not available for draft projects")
     await fetchJson("/admin/mode", {
       method: "POST",
       body: { mode },
       timeoutMs: 10000,
     })
-  }, [])
+  }, [isLiveProject])
 
   const sendIncident = useCallback(
     async ({ active, severity, message }) => {
+      if (!isLiveProject) throw new Error("Incidents are not available for draft projects")
       await fetchJson("/admin/incident", {
         method: "POST",
         body: { projectId, active, severity, message },
         timeoutMs: 10000,
       })
     },
-    [projectId]
+    [projectId, isLiveProject]
   )
+
+  const saveDraftProjects = useCallback((next) => {
+    setDraftProjects(next)
+    writeDraftProjects(next)
+
+    const keep = new Set((next || []).map((p) => p?.id).filter(Boolean))
+    setDraftConnectors((prev) => {
+      const arr = Array.isArray(prev) ? prev : []
+      const filtered = arr.filter((c) => c && keep.has(c.projectId))
+      writeDraftConnectors(filtered)
+      return filtered
+    })
+  }, [])
+
+  const saveDraftConnectors = useCallback((next) => {
+    setDraftConnectors(next)
+    writeDraftConnectors(next)
+  }, [])
+
+  const renameDraftProjectId = useCallback((oldId, newId) => {
+    const from = String(oldId || "").trim()
+    const to = String(newId || "").trim()
+    if (!from || !to || from === to) return
+
+    setDraftConnectors((prev) => {
+      const arr = Array.isArray(prev) ? prev : []
+
+      const used = new Set(
+        arr
+          .filter((c) => c && c.projectId === to)
+          .map((c) => normalizeConnectorId(c.id))
+          .filter(Boolean)
+      )
+
+      const next = arr
+        .map((c) => {
+          if (!c) return c
+          if (c.projectId !== from) return c
+
+          const migratedId = uniqueConnectorId(c.id, used)
+          if (!migratedId) return c
+          used.add(migratedId)
+
+          return {
+            ...c,
+            projectId: to,
+            id: migratedId,
+          }
+        })
+        .filter(Boolean)
+
+      writeDraftConnectors(next)
+      return next
+    })
+  }, [])
 
   const reasons = Array.isArray(derived.reasons) ? derived.reasons : []
 
@@ -226,16 +407,32 @@ export default function App() {
           </div>
         </div>
         <div className="header-actions">
+          <button className="btn btn-ghost" disabled={busy} onClick={() => setProjectsModalOpen(true)}>
+            Projects
+          </button>
           <select
             className="project-select"
             value={projectId || ""}
             onChange={(e) => setProjectId(e.target.value || null)}
           >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name || p.id}
-              </option>
-            ))}
+            {projects.length > 0 && (
+              <optgroup label="Live">
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.id}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {draftProjects.length > 0 && (
+              <optgroup label="Draft">
+                {draftProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.id}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
           <button
             className="btn btn-primary"
@@ -247,77 +444,124 @@ export default function App() {
         </div>
       </header>
 
+      <div className="env-banner">
+        <div className="env-banner-left">
+          <span className={`env-pill ${!projectId ? "env-none" : isLiveProject ? "env-live" : "env-draft"}`}>
+            {!projectId ? "No project" : isLiveProject ? "Live" : "Draft"}
+          </span>
+          {projectDisplayName && <span className="env-label">{projectDisplayName}</span>}
+        </div>
+        <div className="env-banner-right">
+          {isLiveProject && <span className="env-pill env-mode">Mode: {status?.mode || "--"}</span>}
+          {isLiveProject && (
+            <span className={`env-pill ${rpcHealthy ? "env-ok" : "env-bad"}`}>
+              RPC: {rpcHealthy ? (rpcBlock ? `ok @ ${rpcBlock}` : "ok") : "error"}
+            </span>
+          )}
+          {!isLiveProject && projectId && <span className="env-pill env-warn">Not deployed</span>}
+        </div>
+      </div>
+
       {incident?.active && (
         <div className={`incident-alert ${incident.severity === "critical" ? "critical" : "warning"}`}>
           <strong>[{incident.severity?.toUpperCase()}]</strong> {incident.message || "No message"}
         </div>
       )}
 
-      <HeroSection
-        status={statusValue}
-        statusLine={statusLine}
-        coverageBps={receiver.lastCoverageBps}
-        minCoverageBps={receiver.minCoverageBps}
-        mintingPaused={receiver.mintingPaused}
-        mintingEnabled={token.mintingEnabled}
-        lastUpdatedAt={lastUpdatedAt}
-        busy={busy}
-        reasons={reasons}
+      {!hasAnyProjects ? (
+        <main className="main-content">
+          <div className="first-run-card">
+            <h2 className="first-run-title">Create your first project</h2>
+            <p className="first-run-subtitle">
+              Add an asset, connect data sources, and export a deployment bundle.
+            </p>
+            <button className="btn btn-primary" onClick={() => setProjectsModalOpen(true)}>
+              Open Projects
+            </button>
+          </div>
+        </main>
+      ) : (
+        <>
+          <HeroSection
+            status={statusValue}
+            statusLine={statusLine}
+            coverageBps={receiver.lastCoverageBps}
+            minCoverageBps={receiver.minCoverageBps}
+            mintingPaused={receiver.mintingPaused}
+            mintingEnabled={token.mintingEnabled}
+            lastUpdatedAt={lastUpdatedAt}
+            busy={busy}
+            reasons={reasons}
+          />
+
+          <Tabs tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
+
+          <main className="main-content">
+            {activeTab === "monitor" && (
+              <OverviewTab
+                derived={derived}
+                receiver={receiver}
+                token={token}
+                mode={status?.mode}
+              />
+            )}
+
+            {activeTab === "connectors" && (
+              <ConnectorsTab
+                projectId={projectId}
+                isLiveProject={isLiveProject}
+                draftConnectors={draftConnectors}
+                onSaveDraftConnectors={saveDraftConnectors}
+                reserveRows={reserveRows}
+                incident={incident}
+                incidentMessage={incidentMessage}
+                setIncidentMessage={setIncidentMessage}
+                onSetIncident={(severity) =>
+                  void withAction(async () =>
+                    sendIncident({
+                      active: true,
+                      severity,
+                      message: incidentMessage || `${severity} incident`,
+                    })
+                  )
+                }
+                onClearIncident={() =>
+                  void withAction(async () =>
+                    sendIncident({ active: false, severity: "warning", message: "" })
+                  )
+                }
+                busy={busy}
+              />
+            )}
+
+            {activeTab === "policy" && (
+              <SettingsTab
+                derived={derived}
+                interfaces={status?.interfaces}
+                operator={status?.operator}
+                mode={status?.mode}
+                onSetMode={(mode) => void withAction(async () => sendMode(mode))}
+                busy={busy || !isLiveProject}
+              />
+            )}
+
+            {activeTab === "onchain" && <OnchainTab onchain={status?.onchain} links={status?.links} />}
+
+            {activeTab === "audit" && <HistoryTab history={history} />}
+          </main>
+        </>
+      )}
+
+      <ProjectsModal
+        open={projectsModalOpen}
+        onClose={() => setProjectsModalOpen(false)}
+        serverProjects={projects}
+        draftProjects={draftProjects}
+        onSaveDraftProjects={saveDraftProjects}
+        onRenameDraftProjectId={renameDraftProjectId}
+        activeProjectId={projectId}
+        onSelectProjectId={(id) => setProjectId(id || null)}
       />
-
-      <Tabs tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
-
-      <main className="main-content">
-        {activeTab === "overview" && (
-          <OverviewTab
-            derived={derived}
-            receiver={receiver}
-            token={token}
-            mode={status?.mode}
-          />
-        )}
-
-        {activeTab === "sources" && (
-          <SourcesTab
-            reserveRows={reserveRows}
-            incident={incident}
-            incidentMessage={incidentMessage}
-            setIncidentMessage={setIncidentMessage}
-            onSetIncident={(severity) =>
-              void withAction(async () =>
-                sendIncident({
-                  active: true,
-                  severity,
-                  message: incidentMessage || `${severity} incident`,
-                })
-              )
-            }
-            onClearIncident={() =>
-              void withAction(async () =>
-                sendIncident({ active: false, severity: "warning", message: "" })
-              )
-            }
-            busy={busy}
-          />
-        )}
-
-        {activeTab === "onchain" && (
-          <OnchainTab onchain={status?.onchain} links={status?.links} />
-        )}
-
-        {activeTab === "history" && <HistoryTab history={history} />}
-
-        {activeTab === "settings" && (
-          <SettingsTab
-            derived={derived}
-            interfaces={status?.interfaces}
-            operator={status?.operator}
-            mode={status?.mode}
-            onSetMode={(mode) => void withAction(async () => sendMode(mode))}
-            busy={busy}
-          />
-        )}
-      </main>
 
       <footer className="footer">
         <span>ReserveWatch Console</span>

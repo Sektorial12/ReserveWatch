@@ -39,8 +39,8 @@ export default function SettingsTab({
 
   return (
     <div className="tab-content">
-      <h2 className="tab-title">Settings & Policy</h2>
-      <p className="tab-subtitle">Configuration and operational context</p>
+      <h2 className="tab-title">Policy</h2>
+      <p className="tab-subtitle">Policy parameters and operational controls</p>
 
       <div className="detail-section">
         <h3 className="section-title">Policy Parameters</h3>
