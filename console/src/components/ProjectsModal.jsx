@@ -28,6 +28,7 @@ export default function ProjectsModal({
   onClose,
   serverProjects,
   draftProjects,
+  draftPolicies,
   onSaveDraftProjects,
   onRenameDraftProjectId,
   activeProjectId,
@@ -152,6 +153,29 @@ export default function ProjectsModal({
 
     const p = activeDraft
 
+    const numberOrNull = (value) => {
+      if (value === null || value === undefined || value === "") return null
+      const n = Number(value)
+      return Number.isFinite(n) ? n : null
+    }
+
+    const policy = (() => {
+      const id = normalizeId(p?.id)
+      if (!id) return null
+      const arr = Array.isArray(draftPolicies) ? draftPolicies : []
+      return arr.find((d) => d && normalizeId(d.projectId) === id) || null
+    })()
+
+    const maxReserveAgeS =
+      policy?.maxReserveAgeS !== undefined && policy?.maxReserveAgeS !== null && String(policy.maxReserveAgeS).trim()
+        ? numberOrNull(policy.maxReserveAgeS)
+        : numberOrNull(p.maxReserveAgeS)
+
+    const maxReserveMismatchRatio =
+      policy?.maxMismatchRatio !== undefined && policy?.maxMismatchRatio !== null && String(policy.maxMismatchRatio).trim()
+        ? numberOrNull(policy.maxMismatchRatio)
+        : numberOrNull(p.maxReserveMismatchRatio)
+
     const serverProject = {
       id: p.id,
       name: p.name,
@@ -160,8 +184,8 @@ export default function ProjectsModal({
       rpcUrl: p.rpcUrl,
       explorerBaseUrl: p.explorerBaseUrl,
       expectedForwarderAddress: p.expectedForwarderAddress || null,
-      maxReserveAgeS: p.maxReserveAgeS ? Number(p.maxReserveAgeS) : null,
-      maxReserveMismatchRatio: p.maxReserveMismatchRatio ? Number(p.maxReserveMismatchRatio) : null,
+      maxReserveAgeS,
+      maxReserveMismatchRatio,
     }
 
     const workflowConfig = {
@@ -170,7 +194,7 @@ export default function ProjectsModal({
       liabilityTokenAddress: p.liabilityTokenAddress,
       reserveUrlPrimary: "<set-me>",
       reserveUrlSecondary: "<set-me>",
-      minCoverageBps: "10000",
+      minCoverageBps: policy?.minCoverageBps ? String(policy.minCoverageBps) : "10000",
       gasLimit: "900000",
       attestationVersion: "v2",
     }
@@ -179,7 +203,7 @@ export default function ProjectsModal({
       serverProjectsJsonEntry: jsonStableStringify(serverProject),
       workflowConfigSnippet: jsonStableStringify(workflowConfig),
     }
-  }, [activeDraft])
+  }, [activeDraft, draftPolicies])
 
   const copy = async (text) => {
     try {

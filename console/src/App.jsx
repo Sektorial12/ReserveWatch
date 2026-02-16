@@ -67,6 +67,7 @@ const formatInt = (value) => {
 
 const DRAFT_PROJECTS_KEY = "reservewatch:draftProjects:v1"
 const DRAFT_CONNECTORS_KEY = "reservewatch:draftConnectors:v1"
+const DRAFT_POLICY_KEY = "reservewatch:draftPolicy:v1"
 
 const readDraftProjects = () => {
   try {
@@ -108,6 +109,27 @@ const writeDraftConnectors = (connectors) => {
   }
 }
 
+const readDraftPolicies = () => {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_POLICY_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+      ? parsed.filter((p) => p && typeof p.projectId === "string")
+      : []
+  } catch {
+    return []
+  }
+}
+
+const writeDraftPolicies = (policies) => {
+  try {
+    window.localStorage.setItem(DRAFT_POLICY_KEY, JSON.stringify(policies))
+  } catch {
+    return
+  }
+}
+
 const normalizeConnectorId = (value) => {
   return String(value || "")
     .trim()
@@ -138,6 +160,7 @@ export default function App() {
   const [projects, setProjects] = useState([])
   const [draftProjects, setDraftProjects] = useState(() => readDraftProjects())
   const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
+  const [draftPolicies, setDraftPolicies] = useState(() => readDraftPolicies())
   const [projectsModalOpen, setProjectsModalOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
   const [status, setStatus] = useState(null)
@@ -344,11 +367,23 @@ export default function App() {
       writeDraftConnectors(filtered)
       return filtered
     })
+
+    setDraftPolicies((prev) => {
+      const arr = Array.isArray(prev) ? prev : []
+      const filtered = arr.filter((p) => p && keep.has(p.projectId))
+      writeDraftPolicies(filtered)
+      return filtered
+    })
   }, [])
 
   const saveDraftConnectors = useCallback((next) => {
     setDraftConnectors(next)
     writeDraftConnectors(next)
+  }, [])
+
+  const saveDraftPolicies = useCallback((next) => {
+    setDraftPolicies(next)
+    writeDraftPolicies(next)
   }, [])
 
   const renameDraftProjectId = useCallback((oldId, newId) => {
@@ -384,6 +419,17 @@ export default function App() {
         .filter(Boolean)
 
       writeDraftConnectors(next)
+      return next
+    })
+
+    setDraftPolicies((prev) => {
+      const arr = Array.isArray(prev) ? prev : []
+      const next = arr.map((p) => {
+        if (!p) return p
+        if (p.projectId !== from) return p
+        return { ...p, projectId: to }
+      })
+      writeDraftPolicies(next)
       return next
     })
   }, [])
@@ -536,12 +582,18 @@ export default function App() {
 
             {activeTab === "policy" && (
               <SettingsTab
+                projectId={projectId}
+                isLiveProject={isLiveProject}
                 derived={derived}
                 interfaces={status?.interfaces}
                 operator={status?.operator}
+                status={status}
+                draftProject={selectedDraft}
+                draftPolicies={draftPolicies}
+                onSaveDraftPolicies={saveDraftPolicies}
                 mode={status?.mode}
                 onSetMode={(mode) => void withAction(async () => sendMode(mode))}
-                busy={busy || !isLiveProject}
+                busy={busy}
               />
             )}
 
@@ -557,6 +609,7 @@ export default function App() {
         onClose={() => setProjectsModalOpen(false)}
         serverProjects={projects}
         draftProjects={draftProjects}
+        draftPolicies={draftPolicies}
         onSaveDraftProjects={saveDraftProjects}
         onRenameDraftProjectId={renameDraftProjectId}
         activeProjectId={projectId}
