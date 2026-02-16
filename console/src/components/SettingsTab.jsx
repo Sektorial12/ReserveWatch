@@ -16,6 +16,16 @@ const formatMaybe = (value) => {
   return String(value)
 }
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+const isNonZeroAddress = (value) => {
+  if (!value) return false
+  const addr = String(value).trim().toLowerCase()
+  if (!addr) return false
+  if (!addr.startsWith("0x")) return true
+  return addr !== ZERO_ADDRESS
+}
+
 const computePreview = ({ status, policy }) => {
   const now = Math.floor(Date.now() / 1000)
 
@@ -226,6 +236,93 @@ export default function SettingsTab({
     return computePreview({ status, policy: resolvedPolicy })
   }, [isLiveProject, resolvedPolicy, status])
 
+  const enforcementReadiness = useMemo(() => {
+    if (!isLiveProject || !status) return null
+
+    const onchain = status?.onchain || {}
+    const enforcement = onchain?.enforcement || {}
+    const permissions = onchain?.permissions || {}
+    const token = onchain?.token || {}
+    const receiver = onchain?.receiver || {}
+
+    const rpcOk = !onchain?.error
+    const rpcDetail = rpcOk
+      ? onchain?.blockNumber
+        ? `ok @ ${onchain.blockNumber}`
+        : "ok"
+      : String(onchain?.error || "error")
+
+    const hookWiredOk = Boolean(enforcement?.hookWired)
+    const forwarderSetOk = Boolean(enforcement?.forwarderSet)
+
+    const expectedForwarder = enforcement?.expectedForwarder
+    const expectedForwarderConfiguredOk = Boolean(expectedForwarder)
+
+    const forwarderMatchesExpected = enforcement?.forwarderMatchesExpected
+    const forwarderMatchesExpectedState =
+      forwarderMatchesExpected === null || forwarderMatchesExpected === undefined
+        ? "unknown"
+        : forwarderMatchesExpected
+          ? "pass"
+          : "fail"
+
+    const receiverOwnerOk = isNonZeroAddress(permissions?.receiverOwner || receiver?.owner)
+    const tokenOwnerOk = isNonZeroAddress(permissions?.tokenOwner || token?.owner)
+    const guardianOk = isNonZeroAddress(permissions?.guardian || token?.guardian)
+
+    const items = [
+      { label: "RPC health", state: rpcOk ? "pass" : "fail", detail: rpcDetail },
+      { label: "Enforcement hook wired", state: hookWiredOk ? "pass" : "fail", detail: hookWiredOk ? "wired" : "not wired" },
+      { label: "Forwarder set", state: forwarderSetOk ? "pass" : "fail", detail: forwarderSetOk ? "set" : "not set" },
+      {
+        label: "Expected forwarder configured",
+        state: expectedForwarderConfiguredOk ? "pass" : "fail",
+        detail: expectedForwarderConfiguredOk ? "configured" : "missing",
+      },
+      {
+        label: "Forwarder matches expected",
+        state: forwarderMatchesExpectedState,
+        detail:
+          forwarderMatchesExpectedState === "unknown"
+            ? "no expected forwarder"
+            : forwarderMatchesExpected
+              ? "match"
+              : "mismatch",
+      },
+      { label: "Receiver owner set", state: receiverOwnerOk ? "pass" : "warn", detail: receiverOwnerOk ? "set" : "missing" },
+      { label: "Token owner set", state: tokenOwnerOk ? "pass" : "warn", detail: tokenOwnerOk ? "set" : "missing" },
+      { label: "Guardian set", state: guardianOk ? "pass" : "warn", detail: guardianOk ? "set" : "missing" },
+      { label: "Gas limit", state: "info", detail: "export default: 900000" },
+    ]
+
+    const links = status?.links || {}
+    const linkEntries = [
+      ["Receiver", links?.receiver],
+      ["Token", links?.token],
+      ["Guardian", links?.guardian],
+      ["Forwarder", links?.forwarder],
+      ["Latest Tx", links?.lastTx],
+    ].filter(([, url]) => typeof url === "string" && url.length)
+
+    const addresses = [
+      { label: "Receiver owner", value: permissions?.receiverOwner || receiver?.owner || "--", url: links?.receiverOwner },
+      { label: "Token owner", value: permissions?.tokenOwner || token?.owner || "--", url: links?.tokenOwner },
+      { label: "Guardian", value: permissions?.guardian || token?.guardian || "--", url: links?.guardian },
+      { label: "Forwarder", value: permissions?.forwarderAddress || receiver?.forwarderAddress || "--", url: links?.forwarder },
+      {
+        label: "Expected forwarder",
+        value: enforcement?.expectedForwarder || "--",
+        url: enforcement?.expectedForwarder ? `${links?.explorerBase || "https://sepolia.etherscan.io"}/address/${enforcement.expectedForwarder}` : null,
+      },
+    ]
+
+    return {
+      items,
+      linkEntries,
+      addresses,
+    }
+  }, [isLiveProject, status])
+
   const saveDraftPolicy = () => {
     if (!projectId) return
     if (typeof onSaveDraftPolicies !== "function") return
@@ -394,6 +491,80 @@ export default function SettingsTab({
                   <span className="detail-value">{preview.reasons?.length ? preview.reasons.join(", ") : "--"}</span>
                 </div>
               </div>
+            )}
+          </div>
+
+          <div className="detail-section">
+            <h3 className="section-title">Enforcement Readiness</h3>
+            <p className="tab-subtitle">Verify roles, wiring, and RPC before deploying enforcement.</p>
+
+            {!enforcementReadiness ? (
+              <div className="card">
+                <div className="empty-row">Checklist is available when a live project is selected.</div>
+              </div>
+            ) : (
+              <>
+                <div className="detail-grid">
+                  {enforcementReadiness.items.map((item) => {
+                    const pillClass =
+                      item.state === "pass"
+                        ? "env-ok"
+                        : item.state === "fail"
+                          ? "env-bad"
+                          : item.state === "warn"
+                            ? "env-warn"
+                            : "env-mode"
+
+                    const label = item.state === "pass" ? "PASS" : item.state === "fail" ? "FAIL" : item.state === "warn" ? "WARN" : "INFO"
+
+                    return (
+                      <div key={item.label} className="detail-card">
+                        <span className="detail-label">{item.label}</span>
+                        <span className="detail-value">
+                          <span className={`env-pill ${pillClass}`}>{label}</span>
+                        </span>
+                        <span className="detail-label">Detail</span>
+                        <span className="detail-value">{formatMaybe(item.detail)}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="detail-section">
+                  <h3 className="section-title">Roles & Addresses</h3>
+                  <div className="detail-grid">
+                    {enforcementReadiness.addresses.map((item) => (
+                      <div key={item.label} className="detail-card">
+                        <span className="detail-label">{item.label}</span>
+                        <span className="detail-value mono">{formatMaybe(item.value)}</span>
+                        <span className="detail-label">Explorer</span>
+                        <span className="detail-value">
+                          {item.url ? (
+                            <a href={item.url} target="_blank" rel="noreferrer" className="explorer-link">
+                              Open ↗
+                            </a>
+                          ) : (
+                            "--"
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {enforcementReadiness.linkEntries.length > 0 && (
+                  <div className="detail-section">
+                    <h3 className="section-title">Explorer Links</h3>
+                    <div className="links-row">
+                      {enforcementReadiness.linkEntries.map(([label, url]) => (
+                        <a key={label} href={url} target="_blank" rel="noreferrer" className="explorer-link">
+                          {label} ↗
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </>
