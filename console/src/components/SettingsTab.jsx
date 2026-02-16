@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 const asText = (value) => {
   if (value === null || value === undefined || value === "") return ""
@@ -14,6 +14,32 @@ const toFiniteNumber = (value) => {
 const formatMaybe = (value) => {
   if (value === null || value === undefined || value === "") return "--"
   return String(value)
+}
+
+const fetchJson = async (url, init = {}) => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), init.timeoutMs || 12000)
+
+  try {
+    const response = await fetch(url, {
+      method: init.method || "GET",
+      headers: {
+        "content-type": "application/json",
+        ...(init.headers || {}),
+      },
+      body: init.body ? JSON.stringify(init.body) : undefined,
+      signal: controller.signal,
+    })
+
+    const raw = await response.text().catch(() => "")
+    if (!response.ok) {
+      throw new Error(raw ? `HTTP ${response.status} ${raw}` : `HTTP ${response.status}`)
+    }
+    if (!raw) return null
+    return JSON.parse(raw)
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -178,6 +204,75 @@ export default function SettingsTab({
 
   const [draftError, setDraftError] = useState("")
   const [draftSavedAt, setDraftSavedAt] = useState(null)
+
+  const [runBroadcast, setRunBroadcast] = useState(false)
+  const [runState, setRunState] = useState(null)
+  const [runError, setRunError] = useState("")
+  const [runId, setRunId] = useState(null)
+  const [runOutput, setRunOutput] = useState("")
+
+  const startRun = useCallback(async () => {
+    if (!isLiveProject) return
+
+    setRunError("")
+    setRunOutput("")
+    setRunState("starting")
+    setRunId(null)
+
+    try {
+      const res = await fetchJson("/admin/run", {
+        method: "POST",
+        body: {
+          broadcast: Boolean(runBroadcast),
+        },
+        timeoutMs: 12000,
+      })
+
+      const nextRunId = res?.runId || null
+      const nextRun = res?.run || null
+
+      setRunId(nextRunId)
+      setRunState(nextRun?.state || "running")
+      setRunOutput(String(nextRun?.output || ""))
+      setRunError(nextRun?.error ? String(nextRun.error) : "")
+    } catch (err) {
+      setRunState("error")
+      setRunError(String(err?.message || err))
+    }
+  }, [isLiveProject, runBroadcast])
+
+  useEffect(() => {
+    if (!isLiveProject) return
+    if (!runId) return
+    if (runState !== "running" && runState !== "starting") return
+
+    let alive = true
+    const tick = async () => {
+      try {
+        const res = await fetchJson(`/admin/run/${encodeURIComponent(runId)}`, { timeoutMs: 12000 })
+        if (!alive) return
+        const r = res?.run || null
+        if (r) {
+          setRunState(r.state || null)
+          setRunOutput(String(r.output || ""))
+          setRunError(r.error ? String(r.error) : "")
+        }
+      } catch (err) {
+        if (!alive) return
+        setRunError(String(err?.message || err))
+      }
+    }
+
+    void tick()
+    const t = setInterval(() => {
+      void tick()
+    }, 1500)
+
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [isLiveProject, runId, runState])
 
   useEffect(() => {
     setDraftError("")
@@ -566,6 +661,60 @@ export default function SettingsTab({
                 )}
               </>
             )}
+          </div>
+
+          <div className="detail-section">
+            <h3 className="section-title">On-demand Run</h3>
+            <p className="tab-subtitle">Trigger a single CRE workflow run from the console.</p>
+
+            <div className="card">
+              <div className="form">
+                <div className="form-grid">
+                  <label className="field span-2">
+                    <span className="field-label">Broadcast onchain</span>
+                    <select
+                      className="text-input"
+                      value={runBroadcast ? "yes" : "no"}
+                      onChange={(e) => setRunBroadcast(e.target.value === "yes")}
+                      disabled={busy || runState === "running" || runState === "starting"}
+                    >
+                      <option value="no">No (simulate only)</option>
+                      <option value="yes">Yes (requires funded key in server .env)</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="form-actions">
+                  <button
+                    className="btn btn-primary"
+                    disabled={busy || runState === "running" || runState === "starting"}
+                    onClick={() => void startRun()}
+                  >
+                    {runState === "running" || runState === "starting" ? "Running..." : "Run now"}
+                  </button>
+                </div>
+
+                <div className="detail-grid">
+                  <div className="detail-card">
+                    <span className="detail-label">State</span>
+                    <span className="detail-value">{formatMaybe(runState)}</span>
+                  </div>
+                  <div className="detail-card">
+                    <span className="detail-label">Run ID</span>
+                    <span className="detail-value mono">{formatMaybe(runId)}</span>
+                  </div>
+                </div>
+
+                {runError && <div className="form-error">{runError}</div>}
+
+                {runOutput && (
+                  <div className="export-section">
+                    <div className="export-title">Output</div>
+                    <pre className="code-block">{runOutput}</pre>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </>
       )}

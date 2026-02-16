@@ -1,6 +1,7 @@
 import express from "express"
 import fs from "node:fs"
 import path from "node:path"
+import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { createPublicClient, http, parseAbi, parseAbiItem, recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
@@ -43,6 +44,32 @@ try {
   if (pk) reserveSigningAccount = privateKeyToAccount(pk)
 } catch {
   reserveSigningAccount = null
+}
+
+let activeRun = null
+const runsById = new Map()
+
+const reservewatchRoot = (() => {
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  return path.resolve(__dirname, "..")
+})()
+
+const defaultEnvPath = path.resolve(reservewatchRoot, ".env")
+
+const createRunId = () => {
+  const rand = Math.random().toString(16).slice(2, 10)
+  return `${Date.now().toString(16)}-${rand}`
+}
+
+const appendRunOutput = (run, chunk) => {
+  const text = String(chunk || "")
+  if (!text) return
+  run.output = (run.output || "") + text
+  const max = 120_000
+  if (run.output.length > max) {
+    run.output = run.output.slice(run.output.length - max)
+  }
 }
 
 const reserveMessage = ({ timestamp, reserveUsd, navUsd, source }) => {
@@ -633,6 +660,95 @@ app.post("/admin/incident", (req, res) => {
 
   const state = setIncidentState({ projectId, active, severity, message })
   res.json({ projectId: projectId || "default", incident: state })
+})
+
+app.post("/admin/run", (req, res) => {
+  const broadcast = Boolean(req.body?.broadcast)
+  const target = typeof req.body?.target === "string" && req.body.target.trim() ? req.body.target.trim() : "staging-settings"
+  const workflow = typeof req.body?.workflow === "string" && req.body.workflow.trim() ? req.body.workflow.trim() : "reservewatch-workflow"
+
+  if (activeRun && activeRun.state === "running") {
+    res.status(409).json({ error: "run already in progress", runId: activeRun.runId, run: activeRun })
+    return
+  }
+
+  const runId = createRunId()
+  const run = {
+    runId,
+    state: "running",
+    workflow,
+    target,
+    broadcast,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    exitCode: null,
+    error: null,
+    output: "",
+  }
+
+  runsById.set(runId, run)
+  activeRun = run
+
+  const args = ["workflow", "simulate", workflow, "--target", target]
+  if (broadcast) args.push("--broadcast")
+  if (fs.existsSync(defaultEnvPath)) args.push("--env", defaultEnvPath)
+
+  try {
+    const child = spawn("cre", args, {
+      cwd: reservewatchRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    })
+
+    child.stdout?.on("data", (chunk) => appendRunOutput(run, chunk))
+    child.stderr?.on("data", (chunk) => appendRunOutput(run, chunk))
+
+    child.on("error", (err) => {
+      run.state = "failed"
+      run.error = String(err?.message || err)
+      run.exitCode = null
+      run.finishedAt = new Date().toISOString()
+      activeRun = null
+    })
+
+    child.on("exit", (code) => {
+      run.exitCode = typeof code === "number" ? code : null
+      run.state = code === 0 ? "ok" : "failed"
+      run.finishedAt = new Date().toISOString()
+      activeRun = null
+    })
+
+    res.json({ runId, run })
+  } catch (err) {
+    run.state = "failed"
+    run.error = String(err?.message || err)
+    run.finishedAt = new Date().toISOString()
+    activeRun = null
+    res.status(500).json({ error: run.error, runId, run })
+  }
+})
+
+app.get("/admin/run/:runId", (req, res) => {
+  const runId = String(req.params?.runId || "").trim()
+  if (!runId) {
+    res.status(400).json({ error: "missing runId" })
+    return
+  }
+
+  const run = runsById.get(runId)
+  if (!run) {
+    res.status(404).json({ error: "run not found" })
+    return
+  }
+
+  res.json({ runId, run })
+})
+
+app.get("/admin/run", (req, res) => {
+  const runs = Array.from(runsById.values())
+    .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))
+    .slice(0, 10)
+  res.json({ activeRun: activeRun && activeRun.state === "running" ? activeRun : null, runs })
 })
 
 app.get("/incident/feed", (req, res) => {
