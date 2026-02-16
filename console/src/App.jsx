@@ -14,6 +14,7 @@ import ReportTab from "./components/ReportTab"
 import StatusPill from "./components/StatusPill"
 
 const POLL_MS = 8000
+const HISTORY_SWR_MS = 60000
 
 const TABS = [
   { id: "monitor", label: "Live Monitor" },
@@ -176,6 +177,7 @@ const parseStatusPath = () => {
 export default function App() {
   const [showLanding, setShowLanding] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [polling, setPolling] = useState(false)
   const [projects, setProjects] = useState([])
   const [draftProjects, setDraftProjects] = useState(() => readDraftProjects())
   const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
@@ -200,7 +202,11 @@ export default function App() {
 
   const pollRef = useRef(null)
   const busyRef = useRef(false)
+  const pendingActionRef = useRef(null)
   const draftProjectsRef = useRef(draftProjects)
+  const statusCacheRef = useRef(new Map())
+  const historyCacheRef = useRef(new Map())
+  const historyFetchedAtRef = useRef(new Map())
 
   useEffect(() => {
     draftProjectsRef.current = draftProjects
@@ -210,6 +216,7 @@ export default function App() {
   const receiver = status?.onchain?.receiver || {}
   const token = status?.onchain?.token || {}
   const incident = status?.incident || null
+  const effectiveBusy = busy || polling
 
   const statusValue = typeof derived.status === "string" ? derived.status : "STALE"
 
@@ -293,7 +300,7 @@ export default function App() {
   }, [statusPathProjectId])
 
   const loadData = useCallback(
-    async (overrideProjectId = null) => {
+    async (overrideProjectId = null, options = {}) => {
       const activeProjectId = overrideProjectId || projectId
       const live = activeProjectId ? projects.some((p) => p.id === activeProjectId) : false
 
@@ -312,15 +319,55 @@ export default function App() {
 
       const query = activeProjectId ? `?project=${encodeURIComponent(activeProjectId)}` : ""
 
-      const [statusRes, historyRes] = await Promise.all([
-        fetchJson(`/api/status${query}`, { timeoutMs: 12000 }),
-        fetchJson(`/api/history${query ? `${query}&limit=50` : "?limit=50"}`, { timeoutMs: 12000 }),
-      ])
+      const cachedStatus = statusCacheRef.current.get(activeProjectId)
+      if (cachedStatus?.data) {
+        setStatus(cachedStatus.data)
+      } else {
+        setStatus(null)
+      }
 
-      setStatus(statusRes)
-      setHistory(Array.isArray(historyRes?.events) ? historyRes.events : [])
-      setHistoryMeta(
-        historyRes
+      const cachedHistory = historyCacheRef.current.get(activeProjectId)
+      if (cachedHistory?.events) {
+        setHistory(cachedHistory.events)
+        setHistoryMeta(cachedHistory.meta || null)
+      } else {
+        setHistory([])
+        setHistoryMeta(null)
+      }
+
+      const wantsHistory = activeTab === "audit" || activeTab === "report"
+      const forceHistory = Boolean(options?.forceHistory)
+      const lastHistoryFetch = historyFetchedAtRef.current.get(activeProjectId) || 0
+      const shouldFetchHistory =
+        forceHistory || (wantsHistory && (Date.now() - lastHistoryFetch > HISTORY_SWR_MS || !cachedHistory))
+
+      const requests = [
+        fetchJson(`/api/status${query}`, { timeoutMs: 12000 }),
+        shouldFetchHistory
+          ? fetchJson(`/api/history${query ? `${query}&limit=50` : "?limit=50"}`, { timeoutMs: 12000 })
+          : Promise.resolve(null),
+      ]
+
+      const [statusResult, historyResult] = await Promise.allSettled(requests)
+
+      if (statusResult.status === "fulfilled") {
+        setStatus(statusResult.value)
+        statusCacheRef.current.set(activeProjectId, { data: statusResult.value, fetchedAt: Date.now() })
+        setLastUpdatedAt(Date.now())
+        setError("")
+      } else {
+        setError(String(statusResult.reason?.message || statusResult.reason || "Status fetch failed"))
+        setLastUpdatedAt(Date.now())
+      }
+
+      if (!shouldFetchHistory) {
+        return
+      }
+
+      if (historyResult.status === "fulfilled") {
+        const historyRes = historyResult.value
+        const events = Array.isArray(historyRes?.events) ? historyRes.events : []
+        const meta = historyRes
           ? {
               project: historyRes?.project || null,
               receiverAddress: historyRes?.receiverAddress || null,
@@ -330,28 +377,50 @@ export default function App() {
               error: historyRes?.error || null,
             }
           : null
-      )
-      setLastUpdatedAt(Date.now())
-      setError("")
+
+        setHistory(events)
+        setHistoryMeta(meta)
+        historyCacheRef.current.set(activeProjectId, { events, meta })
+        historyFetchedAtRef.current.set(activeProjectId, Date.now())
+      } else {
+        const msg = String(historyResult.reason?.message || historyResult.reason || "History fetch failed")
+        setHistoryMeta((prev) => {
+          if (prev) return { ...prev, error: msg }
+          return { project: activeProjectId, receiverAddress: null, rpcUrl: null, fromBlock: null, toBlock: null, error: msg }
+        })
+        historyFetchedAtRef.current.set(activeProjectId, Date.now())
+      }
     },
-    [projectId, projects]
+    [projectId, projects, activeTab]
   )
 
   const withAction = useCallback(
-    async (fn, overrideProjectId = null) => {
-      if (busyRef.current) return
+    async (fn, overrideProjectId = null, loadOptions = null) => {
+      if (busyRef.current) {
+        pendingActionRef.current = { fn, overrideProjectId, loadOptions }
+        return
+      }
 
       busyRef.current = true
-      setBusy(true)
+      const silent = Boolean(loadOptions?.silent)
+      if (!silent) setBusy(true)
+      else setPolling(true)
 
       try {
         await fn()
-        await loadData(overrideProjectId)
+        await loadData(overrideProjectId, loadOptions)
       } catch (err) {
         setError(String(err?.message || err))
       } finally {
         busyRef.current = false
-        setBusy(false)
+        if (!silent) setBusy(false)
+        else setPolling(false)
+
+        const pending = pendingActionRef.current
+        if (pending) {
+          pendingActionRef.current = null
+          void withAction(pending.fn, pending.overrideProjectId, pending.loadOptions)
+        }
       }
     },
     [loadData]
@@ -388,6 +457,12 @@ export default function App() {
   }, [projectId, isLiveProject, withAction])
 
   useEffect(() => {
+    if (!projectId || !isLiveProject) return
+    if (activeTab !== "audit" && activeTab !== "report") return
+    void withAction(async () => {}, projectId, { forceHistory: true })
+  }, [activeTab, projectId, isLiveProject, withAction])
+
+  useEffect(() => {
     if (!projectId) return
 
     if (pollRef.current) {
@@ -400,7 +475,7 @@ export default function App() {
     }
 
     pollRef.current = setInterval(() => {
-      void withAction(async () => {}, projectId)
+      void withAction(async () => {}, projectId, { silent: true })
     }, POLL_MS)
 
     return () => {
@@ -552,6 +627,7 @@ export default function App() {
             className="project-select"
             value={projectId || ""}
             onChange={(e) => setProjectId(e.target.value || null)}
+            disabled={busy}
           >
             {projects.length > 0 && (
               <optgroup label="Live">
@@ -575,7 +651,13 @@ export default function App() {
           <button
             className="btn btn-primary"
             disabled={busy}
-            onClick={() => void withAction(async () => {})}
+            onClick={() =>
+              void withAction(
+                async () => {},
+                projectId,
+                activeTab === "audit" || activeTab === "report" ? { forceHistory: true } : null
+              )
+            }
           >
             {busy ? "Syncing..." : "Refresh"}
           </button>
@@ -643,85 +725,133 @@ export default function App() {
           <Tabs tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} />
 
           <main className="main-content">
-            {activeTab === "monitor" && (
-              <OverviewTab
-                derived={derived}
-                receiver={receiver}
-                token={token}
-                mode={status?.mode}
-                busy={busy}
-              />
-            )}
+            <section
+              id="panel-monitor"
+              role="tabpanel"
+              aria-labelledby="tab-monitor"
+              hidden={activeTab !== "monitor"}
+              tabIndex={-1}
+            >
+              {activeTab === "monitor" && (
+                <OverviewTab
+                  derived={derived}
+                  receiver={receiver}
+                  token={token}
+                  mode={status?.mode}
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
 
-            {activeTab === "connectors" && (
-              <ConnectorsTab
-                projectId={projectId}
-                isLiveProject={isLiveProject}
-                draftConnectors={draftConnectors}
-                onSaveDraftConnectors={saveDraftConnectors}
-                reserveRows={reserveRows}
-                incident={incident}
-                incidentMessage={incidentMessage}
-                setIncidentMessage={setIncidentMessage}
-                onSetIncident={(severity) =>
-                  void withAction(async () =>
-                    sendIncident({
-                      active: true,
-                      severity,
-                      message: incidentMessage || `${severity} incident`,
-                    })
-                  )
-                }
-                onClearIncident={() =>
-                  void withAction(async () =>
-                    sendIncident({ active: false, severity: "warning", message: "" })
-                  )
-                }
-                busy={busy}
-              />
-            )}
+            <section
+              id="panel-connectors"
+              role="tabpanel"
+              aria-labelledby="tab-connectors"
+              hidden={activeTab !== "connectors"}
+              tabIndex={-1}
+            >
+              {activeTab === "connectors" && (
+                <ConnectorsTab
+                  projectId={projectId}
+                  isLiveProject={isLiveProject}
+                  draftConnectors={draftConnectors}
+                  onSaveDraftConnectors={saveDraftConnectors}
+                  reserveRows={reserveRows}
+                  incident={incident}
+                  incidentMessage={incidentMessage}
+                  setIncidentMessage={setIncidentMessage}
+                  onSetIncident={(severity) =>
+                    void withAction(async () =>
+                      sendIncident({
+                        active: true,
+                        severity,
+                        message: incidentMessage || `${severity} incident`,
+                      })
+                    )
+                  }
+                  onClearIncident={() =>
+                    void withAction(async () =>
+                      sendIncident({ active: false, severity: "warning", message: "" })
+                    )
+                  }
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
 
-            {activeTab === "policy" && (
-              <SettingsTab
-                projectId={projectId}
-                isLiveProject={isLiveProject}
-                derived={derived}
-                interfaces={status?.interfaces}
-                operator={status?.operator}
-                status={status}
-                draftProject={selectedDraft}
-                draftPolicies={draftPolicies}
-                onSaveDraftPolicies={saveDraftPolicies}
-                mode={status?.mode}
-                onSetMode={(mode) => void withAction(async () => sendMode(mode))}
-                busy={busy}
-              />
-            )}
+            <section
+              id="panel-policy"
+              role="tabpanel"
+              aria-labelledby="tab-policy"
+              hidden={activeTab !== "policy"}
+              tabIndex={-1}
+            >
+              {activeTab === "policy" && (
+                <SettingsTab
+                  projectId={projectId}
+                  isLiveProject={isLiveProject}
+                  derived={derived}
+                  interfaces={status?.interfaces}
+                  operator={status?.operator}
+                  status={status}
+                  draftProject={selectedDraft}
+                  draftPolicies={draftPolicies}
+                  onSaveDraftPolicies={saveDraftPolicies}
+                  mode={status?.mode}
+                  onSetMode={(mode) => void withAction(async () => sendMode(mode))}
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
 
-            {activeTab === "onchain" && (
-              <OnchainTab onchain={status?.onchain} links={status?.links} busy={busy} />
-            )}
+            <section
+              id="panel-onchain"
+              role="tabpanel"
+              aria-labelledby="tab-onchain"
+              hidden={activeTab !== "onchain"}
+              tabIndex={-1}
+            >
+              {activeTab === "onchain" && (
+                <OnchainTab onchain={status?.onchain} links={status?.links} busy={effectiveBusy} />
+              )}
+            </section>
 
-            {activeTab === "report" && (
-              <ReportTab
-                projectId={projectId}
-                isLiveProject={isLiveProject}
-                status={status}
-                history={history}
-                historyMeta={historyMeta}
-                busy={busy}
-              />
-            )}
+            <section
+              id="panel-report"
+              role="tabpanel"
+              aria-labelledby="tab-report"
+              hidden={activeTab !== "report"}
+              tabIndex={-1}
+            >
+              {activeTab === "report" && (
+                <ReportTab
+                  projectId={projectId}
+                  isLiveProject={isLiveProject}
+                  status={status}
+                  history={history}
+                  historyMeta={historyMeta}
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
 
-            {activeTab === "audit" && (
-              <HistoryTab
-                projectId={projectId}
-                isLiveProject={isLiveProject}
-                history={history}
-                historyMeta={historyMeta}
-                busy={busy}
-              />
-            )}
+            <section
+              id="panel-audit"
+              role="tabpanel"
+              aria-labelledby="tab-audit"
+              hidden={activeTab !== "audit"}
+              tabIndex={-1}
+            >
+              {activeTab === "audit" && (
+                <HistoryTab
+                  projectId={projectId}
+                  isLiveProject={isLiveProject}
+                  history={history}
+                  historyMeta={historyMeta}
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
           </main>
         </>
       )}

@@ -42,6 +42,29 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.btn:focus-visible,
+.project-select:focus-visible,
+.back-btn:focus-visible,
+.tab-btn:focus-visible,
+.incident-input:focus-visible,
+.text-input:focus-visible,
+.explorer-link:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.tx-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.list-row:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
 /* ========================================
    App Layout
    ======================================== */
@@ -500,6 +523,11 @@ body {
   background: var(--surface-elevated);
 }
 
+.tab-btn:focus-visible {
+  color: var(--text);
+  background: var(--surface-elevated);
+}
+
 .tab-btn.active {
   color: var(--accent);
   border-bottom-color: var(--accent);
@@ -555,7 +583,7 @@ body {
 }
 
 .tab-subtitle {
-  margin: 0 0 24px;
+  margin: 0 0 18px;
   font-size: 0.9rem;
   color: var(--text-secondary);
 }
@@ -678,7 +706,7 @@ body {
    ======================================== */
 
 .detail-section {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .section-title {
@@ -691,7 +719,7 @@ body {
 .section-divider {
   height: 1px;
   background: var(--border);
-  margin: 32px 0;
+  margin: 24px 0;
 }
 
 .detail-grid {
