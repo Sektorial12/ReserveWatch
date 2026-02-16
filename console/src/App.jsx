@@ -609,6 +609,7 @@ export default function App() {
         onClose={() => setProjectsModalOpen(false)}
         serverProjects={projects}
         draftProjects={draftProjects}
+        draftConnectors={draftConnectors}
         draftPolicies={draftPolicies}
         onSaveDraftProjects={saveDraftProjects}
         onRenameDraftProjectId={renameDraftProjectId}

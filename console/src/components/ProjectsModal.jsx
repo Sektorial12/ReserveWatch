@@ -23,11 +23,28 @@ const asText = (value) => {
 
 const jsonStableStringify = (obj) => JSON.stringify(obj, null, 2)
 
+const downloadText = (filename, content, contentType = "application/json") => {
+  try {
+    const blob = new Blob([content], { type: contentType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 500)
+  } catch {
+    return
+  }
+}
+
 export default function ProjectsModal({
   open,
   onClose,
   serverProjects,
   draftProjects,
+  draftConnectors,
   draftPolicies,
   onSaveDraftProjects,
   onRenameDraftProjectId,
@@ -166,6 +183,20 @@ export default function ProjectsModal({
       return arr.find((d) => d && normalizeId(d.projectId) === id) || null
     })()
 
+    const connectors = (() => {
+      const id = normalizeId(p?.id)
+      if (!id) return []
+      const arr = Array.isArray(draftConnectors) ? draftConnectors : []
+      return arr.filter((c) => c && normalizeId(c.projectId) === id)
+    })()
+
+    const primary = connectors.find((c) => String(c.role || "") === "primary") || null
+    const secondary = connectors.find((c) => String(c.role || "") === "secondary") || null
+
+    const expectedSignerPrimary = String(primary?.expectedSigner || "").trim()
+    const expectedSignerSecondary = String(secondary?.expectedSigner || "").trim()
+    const expectedSigner = expectedSignerPrimary || expectedSignerSecondary || ""
+
     const maxReserveAgeS =
       policy?.maxReserveAgeS !== undefined && policy?.maxReserveAgeS !== null && String(policy.maxReserveAgeS).trim()
         ? numberOrNull(policy.maxReserveAgeS)
@@ -189,21 +220,53 @@ export default function ProjectsModal({
     }
 
     const workflowConfig = {
+      schedule: "*/300 * * * * *",
       chainSelectorName: p.chainSelectorName,
       receiverAddress: p.receiverAddress,
       liabilityTokenAddress: p.liabilityTokenAddress,
-      reserveUrlPrimary: "<set-me>",
-      reserveUrlSecondary: "<set-me>",
+      reserveUrlPrimary: primary?.url ? String(primary.url) : "<set-me>",
+      reserveUrlSecondary: secondary?.url ? String(secondary.url) : "<set-me>",
+      reserveExpectedSignerAddress: expectedSigner || undefined,
+      reserveExpectedSignerAddressPrimary: expectedSignerPrimary || undefined,
+      reserveExpectedSignerAddressSecondary: expectedSignerSecondary || undefined,
+      reserveConsensusMode: policy?.consensusMode ? String(policy.consensusMode) : undefined,
+      reserveMaxMismatchRatio: policy?.maxMismatchRatio ? String(policy.maxMismatchRatio) : undefined,
+      reserveMaxAgeS: policy?.maxReserveAgeS ? String(policy.maxReserveAgeS) : undefined,
+      evmReadBlockTag: "finalized",
+      evmReadFallbackToLatest: true,
+      evmReadRetries: "1",
       minCoverageBps: policy?.minCoverageBps ? String(policy.minCoverageBps) : "10000",
       gasLimit: "900000",
       attestationVersion: "v2",
     }
 
+    const bundle = {
+      projectId: p.id,
+      generatedAt: new Date().toISOString(),
+      server: {
+        projectsJson: {
+          defaultProjectId: p.id,
+          projects: [serverProject],
+        },
+      },
+      workflow: {
+        configProductionJson: workflowConfig,
+      },
+      inputs: {
+        draftProject: p,
+        draftPolicy: policy,
+        draftConnectors: connectors,
+      },
+    }
+
     return {
       serverProjectsJsonEntry: jsonStableStringify(serverProject),
       workflowConfigSnippet: jsonStableStringify(workflowConfig),
+      workflowConfigFile: jsonStableStringify(workflowConfig),
+      serverProjectsJsonFile: jsonStableStringify({ defaultProjectId: p.id, projects: [serverProject] }),
+      bundleJson: jsonStableStringify(bundle),
     }
-  }, [activeDraft, draftPolicies])
+  }, [activeDraft, activeProjectId, draftConnectors, draftPolicies])
 
   const copy = async (text) => {
     try {
@@ -299,12 +362,66 @@ export default function ProjectsModal({
 
                     <div className="export-section">
                       <div className="export-header">
+                        <div className="export-title">Server projects.json (file)</div>
+                        <div className="export-actions">
+                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.serverProjectsJsonFile)}>
+                            {copied ? "Copied" : "Copy"}
+                          </button>
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => downloadText("projects.json", activeExport.serverProjectsJsonFile)}
+                          >
+                            Download
+                          </button>
+                        </div>
+                      </div>
+                      <pre className="code-block">{activeExport.serverProjectsJsonFile}</pre>
+                    </div>
+
+                    <div className="export-section">
+                      <div className="export-header">
                         <div className="export-title">Workflow config snippet</div>
                         <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigSnippet)}>
                           {copied ? "Copied" : "Copy"}
                         </button>
                       </div>
                       <pre className="code-block">{activeExport.workflowConfigSnippet}</pre>
+                    </div>
+
+                    <div className="export-section">
+                      <div className="export-header">
+                        <div className="export-title">Workflow config.production.json (file)</div>
+                        <div className="export-actions">
+                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigFile)}>
+                            {copied ? "Copied" : "Copy"}
+                          </button>
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => downloadText("config.production.json", activeExport.workflowConfigFile)}
+                          >
+                            Download
+                          </button>
+                        </div>
+                      </div>
+                      <pre className="code-block">{activeExport.workflowConfigFile}</pre>
+                    </div>
+
+                    <div className="export-section">
+                      <div className="export-header">
+                        <div className="export-title">Export bundle (single JSON)</div>
+                        <div className="export-actions">
+                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.bundleJson)}>
+                            {copied ? "Copied" : "Copy"}
+                          </button>
+                          <button
+                            className="btn btn-primary"
+                            onClick={() => downloadText(`reservewatch-bundle-${normalizeId(activeProjectId) || "draft"}.json`, activeExport.bundleJson)}
+                          >
+                            Download
+                          </button>
+                        </div>
+                      </div>
+                      <pre className="code-block">{activeExport.bundleJson}</pre>
                     </div>
                   </div>
                 )}

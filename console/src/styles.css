@@ -1045,6 +1045,11 @@ body {
   align-items: center;
   justify-content: space-between;
 }
+.export-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
 .export-title {
   font-size: 0.9rem;
   font-weight: 700;
