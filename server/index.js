@@ -2,7 +2,7 @@ import express from "express"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { createPublicClient, http, parseAbi, parseAbiItem } from "viem"
+import { createPublicClient, http, parseAbi, parseAbiItem, recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { sepolia } from "viem/chains"
 
@@ -52,17 +52,56 @@ const reserveMessage = ({ timestamp, reserveUsd, navUsd, source }) => {
   return `ReserveWatch:v1|source=${source}|reserveUsd=${reserveUsd}|timestamp=${timestamp}`
 }
 
-const maybeSignReserve = async (reserve) => {
-  if (!reserveSigningAccount) return reserve
-  try {
-    const signature = await reserveSigningAccount.signMessage({ message: reserveMessage(reserve) })
+const verifyReserveSignature = async (reserve) => {
+  const signer = reserve?.signer
+  const signature = reserve?.signature
+  if (!signer || !signature) {
     return {
       ...reserve,
+      signatureValid: null,
+      recoveredSigner: null,
+      signatureError: null,
+    }
+  }
+
+  try {
+    const recoveredSigner = await recoverMessageAddress({
+      message: reserveMessage(reserve),
+      signature,
+    })
+    const signatureValid = normalizeAddress(recoveredSigner) === normalizeAddress(signer)
+    return {
+      ...reserve,
+      signatureValid,
+      recoveredSigner,
+      signatureError: null,
+    }
+  } catch (err) {
+    return {
+      ...reserve,
+      signatureValid: false,
+      recoveredSigner: null,
+      signatureError: String(err?.message || err),
+    }
+  }
+}
+
+const maybeSignReserve = async (reserve) => {
+  const base = reserve
+
+  if (!reserveSigningAccount) {
+    return verifyReserveSignature(base)
+  }
+  try {
+    const signature = await reserveSigningAccount.signMessage({ message: reserveMessage(reserve) })
+    const signed = {
+      ...base,
       signer: reserveSigningAccount.address,
       signature,
     }
+    return verifyReserveSignature(signed)
   } catch {
-    return reserve
+    return verifyReserveSignature(base)
   }
 }
 
@@ -615,9 +654,13 @@ app.get("/api/status", async (req, res) => {
     const incident = getIncidentState(project?.id)
 
     const onchain = await getOnchainStatus({ project })
+    const [primaryReserve, secondaryReserve] = await Promise.all([
+      maybeSignReserve(reserveFor("source-a")),
+      maybeSignReserve(reserveFor("source-b")),
+    ])
     const reserves = {
-      primary: reserveFor("source-a"),
-      secondary: reserveFor("source-b"),
+      primary: primaryReserve,
+      secondary: secondaryReserve,
     }
 
     const derived = computeDerived({ reserves, onchain, project, incident })
@@ -747,6 +790,31 @@ app.get("/", (req, res) => {
 })
 
 app.get("/console", (req, res) => {
+  if (fs.existsSync(consoleIndexPath)) {
+    res.sendFile(consoleIndexPath)
+    return
+  }
+
+  res.sendFile(legacyConsolePath)
+})
+
+app.get("/console/:projectId/status", (req, res) => {
+  if (fs.existsSync(consoleIndexPath)) {
+    res.sendFile(consoleIndexPath)
+    return
+  }
+
+  res.sendFile(legacyConsolePath)
+})
+
+app.get("/:projectId/status", (req, res, next) => {
+  const projectId = String(req.params?.projectId || "").trim()
+  const reserved = new Set(["api", "admin", "reserve", "incident", "console"])
+  if (!projectId || reserved.has(projectId)) {
+    next()
+    return
+  }
+
   if (fs.existsSync(consoleIndexPath)) {
     res.sendFile(consoleIndexPath)
     return

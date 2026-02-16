@@ -9,6 +9,8 @@ import ConnectorsTab from "./components/ConnectorsTab"
 import OnchainTab from "./components/OnchainTab"
 import HistoryTab from "./components/HistoryTab"
 import SettingsTab from "./components/SettingsTab"
+import PublicStatusPage from "./components/PublicStatusPage"
+import ReportTab from "./components/ReportTab"
 
 const POLL_MS = 8000
 
@@ -17,6 +19,7 @@ const TABS = [
   { id: "connectors", label: "Connectors" },
   { id: "policy", label: "Policy" },
   { id: "onchain", label: "Onchain" },
+  { id: "report", label: "Report" },
   { id: "audit", label: "Audit" },
 ]
 
@@ -154,6 +157,21 @@ const uniqueConnectorId = (baseId, used) => {
   return ""
 }
 
+const parseStatusPath = () => {
+  const raw = String(window.location.pathname || "/")
+  const path = raw.replace(/\/+$/, "")
+  if (!path) return null
+
+  const parts = path.split("/").filter(Boolean)
+  if (parts.length === 2 && parts[1] === "status") {
+    return parts[0]
+  }
+  if (parts.length === 3 && parts[0] === "console" && parts[2] === "status") {
+    return parts[1]
+  }
+  return null
+}
+
 export default function App() {
   const [showLanding, setShowLanding] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -165,10 +183,19 @@ export default function App() {
   const [projectId, setProjectId] = useState(null)
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState([])
+  const [historyMeta, setHistoryMeta] = useState(null)
   const [error, setError] = useState("")
   const [lastUpdatedAt, setLastUpdatedAt] = useState(null)
   const [incidentMessage, setIncidentMessage] = useState("")
   const [activeTab, setActiveTab] = useState("monitor")
+
+  const statusPathProjectId = useMemo(() => parseStatusPath(), [])
+  const isPublicStatusPage = Boolean(statusPathProjectId)
+  const [publicStatus, setPublicStatus] = useState(null)
+  const [publicBusy, setPublicBusy] = useState(false)
+  const [publicError, setPublicError] = useState("")
+  const [publicLastUpdatedAt, setPublicLastUpdatedAt] = useState(null)
+  const [publicNotFound, setPublicNotFound] = useState(false)
 
   const pollRef = useRef(null)
   const busyRef = useRef(false)
@@ -241,6 +268,29 @@ export default function App() {
     if (selected) writeUrlProject(selected)
   }, [])
 
+  const loadPublicStatus = useCallback(async () => {
+    const pid = String(statusPathProjectId || "").trim()
+    if (!pid) return
+
+    setPublicBusy(true)
+    try {
+      const [statusRes, projectsRes] = await Promise.all([
+        fetchJson(`/api/status?project=${encodeURIComponent(pid)}`, { timeoutMs: 12000 }),
+        fetchJson("/api/projects", { timeoutMs: 8000 }).catch(() => null),
+      ])
+      const list = Array.isArray(projectsRes?.projects) ? projectsRes.projects : []
+      setPublicNotFound(list.length ? !list.some((p) => p && p.id === pid) : false)
+      setPublicStatus(statusRes)
+      setPublicLastUpdatedAt(Date.now())
+      setPublicError("")
+    } catch (err) {
+      setPublicError(String(err?.message || err))
+      setPublicLastUpdatedAt(Date.now())
+    } finally {
+      setPublicBusy(false)
+    }
+  }, [statusPathProjectId])
+
   const loadData = useCallback(
     async (overrideProjectId = null) => {
       const activeProjectId = overrideProjectId || projectId
@@ -249,6 +299,7 @@ export default function App() {
       if (!activeProjectId || !live) {
         setStatus(null)
         setHistory([])
+        setHistoryMeta(null)
         setLastUpdatedAt(Date.now())
         setError(
           activeProjectId
@@ -262,11 +313,23 @@ export default function App() {
 
       const [statusRes, historyRes] = await Promise.all([
         fetchJson(`/api/status${query}`, { timeoutMs: 12000 }),
-        fetchJson(`/api/history${query ? `${query}&limit=10` : "?limit=10"}`, { timeoutMs: 12000 }),
+        fetchJson(`/api/history${query ? `${query}&limit=50` : "?limit=50"}`, { timeoutMs: 12000 }),
       ])
 
       setStatus(statusRes)
       setHistory(Array.isArray(historyRes?.events) ? historyRes.events : [])
+      setHistoryMeta(
+        historyRes
+          ? {
+              project: historyRes?.project || null,
+              receiverAddress: historyRes?.receiverAddress || null,
+              rpcUrl: historyRes?.rpcUrl || null,
+              fromBlock: historyRes?.fromBlock || null,
+              toBlock: historyRes?.toBlock || null,
+              error: historyRes?.error || null,
+            }
+          : null
+      )
       setLastUpdatedAt(Date.now())
       setError("")
     },
@@ -305,6 +368,15 @@ export default function App() {
       }
     })()
   }, [loadProjects])
+
+  useEffect(() => {
+    if (!isPublicStatusPage) return
+    void loadPublicStatus()
+    const t = setInterval(() => {
+      void loadPublicStatus()
+    }, POLL_MS)
+    return () => clearInterval(t)
+  }, [isPublicStatusPage, loadPublicStatus])
 
   useEffect(() => {
     if (!projectId) return
@@ -435,6 +507,25 @@ export default function App() {
   }, [])
 
   const reasons = Array.isArray(derived.reasons) ? derived.reasons : []
+
+  if (isPublicStatusPage) {
+    const pid = String(statusPathProjectId || "").trim()
+    const openConsoleHref = `/console?project=${encodeURIComponent(pid)}`
+    const projectName = publicStatus?.onchain?.project?.name || pid
+
+    return (
+      <PublicStatusPage
+        projectId={pid}
+        projectName={projectName}
+        status={publicStatus}
+        busy={publicBusy}
+        error={publicError}
+        lastUpdatedAt={publicLastUpdatedAt}
+        openConsoleHref={openConsoleHref}
+        notFound={publicNotFound}
+      />
+    )
+  }
 
   if (showLanding) {
     return <LandingPage onEnterDashboard={() => setShowLanding(false)} />
@@ -599,7 +690,24 @@ export default function App() {
 
             {activeTab === "onchain" && <OnchainTab onchain={status?.onchain} links={status?.links} />}
 
-            {activeTab === "audit" && <HistoryTab history={history} />}
+            {activeTab === "report" && (
+              <ReportTab
+                projectId={projectId}
+                isLiveProject={isLiveProject}
+                status={status}
+                history={history}
+                historyMeta={historyMeta}
+              />
+            )}
+
+            {activeTab === "audit" && (
+              <HistoryTab
+                projectId={projectId}
+                isLiveProject={isLiveProject}
+                history={history}
+                historyMeta={historyMeta}
+              />
+            )}
           </main>
         </>
       )}
