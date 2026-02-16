@@ -11,6 +11,7 @@ import HistoryTab from "./components/HistoryTab"
 import SettingsTab from "./components/SettingsTab"
 import PublicStatusPage from "./components/PublicStatusPage"
 import ReportTab from "./components/ReportTab"
+import StatusPill from "./components/StatusPill"
 
 const POLL_MS = 8000
 
@@ -589,6 +590,8 @@ export default function App() {
           {projectDisplayName && <span className="env-label">{projectDisplayName}</span>}
         </div>
         <div className="env-banner-right">
+          {isLiveProject && <StatusPill status={statusValue} />}
+          {busy && <span className="env-pill env-mode">Syncing…</span>}
           {isLiveProject && <span className="env-pill env-mode">Mode: {status?.mode || "--"}</span>}
           {isLiveProject && (
             <span className={`env-pill ${rpcHealthy ? "env-ok" : "env-bad"}`}>
@@ -598,6 +601,12 @@ export default function App() {
           {!isLiveProject && projectId && <span className="env-pill env-warn">Not deployed</span>}
         </div>
       </div>
+
+      {isLiveProject && error && (
+        <div className="error-banner">
+          <strong>Error:</strong> {error}
+        </div>
+      )}
 
       {incident?.active && (
         <div className={`incident-alert ${incident.severity === "critical" ? "critical" : "warning"}`}>
@@ -640,6 +649,7 @@ export default function App() {
                 receiver={receiver}
                 token={token}
                 mode={status?.mode}
+                busy={busy}
               />
             )}
 
@@ -688,7 +698,9 @@ export default function App() {
               />
             )}
 
-            {activeTab === "onchain" && <OnchainTab onchain={status?.onchain} links={status?.links} />}
+            {activeTab === "onchain" && (
+              <OnchainTab onchain={status?.onchain} links={status?.links} busy={busy} />
+            )}
 
             {activeTab === "report" && (
               <ReportTab
@@ -697,6 +709,7 @@ export default function App() {
                 status={status}
                 history={history}
                 historyMeta={historyMeta}
+                busy={busy}
               />
             )}
 
@@ -706,6 +719,7 @@ export default function App() {
                 isLiveProject={isLiveProject}
                 history={history}
                 historyMeta={historyMeta}
+                busy={busy}
               />
             )}
           </main>

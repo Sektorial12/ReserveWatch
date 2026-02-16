@@ -1,4 +1,5 @@
 import HeroSection from "./HeroSection"
+import StatusPill from "./StatusPill"
 
 const formatInt = (value) => {
   if (value === null || value === undefined) return "--"
@@ -79,6 +80,7 @@ export default function PublicStatusPage({
           <span className="env-label">{projectName || projectId || "--"}</span>
         </div>
         <div className="env-banner-right">
+          {!notFound && <StatusPill status={statusValue} />}
           <span className={`env-pill ${notFound ? "env-bad" : "env-ok"}`}>{notFound ? "Not found" : "Live"}</span>
           <a className="explorer-link" href={openConsoleHref}>
             Open console ↗

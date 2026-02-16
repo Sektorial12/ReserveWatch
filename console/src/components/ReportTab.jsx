@@ -1,3 +1,5 @@
+import StatusPill from "./StatusPill"
+
 const formatInt = (value) => {
   if (value === null || value === undefined) return "--"
   const n = Number(value)
@@ -37,7 +39,7 @@ const toCsv = (rows) => {
   return rows.map((row) => row.map(esc).join(",")).join("\n")
 }
 
-export default function ReportTab({ projectId, isLiveProject, status, history, historyMeta }) {
+export default function ReportTab({ projectId, isLiveProject, status, history, historyMeta, busy }) {
   if (!projectId) {
     return (
       <div className="tab-content">
@@ -57,6 +59,18 @@ export default function ReportTab({ projectId, isLiveProject, status, history, h
         <p className="tab-subtitle">Proof-of-reserves report and export</p>
         <div className="card">
           <div className="empty-row">Reports are available for live projects only.</div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!status) {
+    return (
+      <div className="tab-content">
+        <h2 className="tab-title">Report</h2>
+        <p className="tab-subtitle">Proof-of-reserves report and export</p>
+        <div className="card">
+          <div className="empty-row">{busy ? "Syncing report data..." : "No report data loaded yet."}</div>
         </div>
       </div>
     )
@@ -164,7 +178,9 @@ export default function ReportTab({ projectId, isLiveProject, status, history, h
           </div>
           <div className="detail-card">
             <span className="detail-label">Status</span>
-            <span className="detail-value">{statusValue}</span>
+            <span className="detail-value">
+              <StatusPill status={statusValue} />
+            </span>
           </div>
           <div className="detail-card">
             <span className="detail-label">Coverage bps</span>

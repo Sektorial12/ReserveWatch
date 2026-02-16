@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
+import StatusPill from "./StatusPill"
+
 const asText = (value) => {
   if (value === null || value === undefined || value === "") return ""
   return String(value)
@@ -563,7 +565,9 @@ export default function SettingsTab({
               <div className="detail-grid">
                 <div className="detail-card">
                   <span className="detail-label">Preview status</span>
-                  <span className="detail-value">{formatMaybe(preview.previewStatus)}</span>
+                  <span className="detail-value">
+                    <StatusPill status={preview.previewStatus} />
+                  </span>
                 </div>
                 <div className="detail-card">
                   <span className="detail-label">Consensus</span>

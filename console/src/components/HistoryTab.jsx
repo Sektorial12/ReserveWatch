@@ -47,7 +47,7 @@ const deltaText = (value) => {
   return `${sign}${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(abs)}`
 }
 
-export default function HistoryTab({ projectId, isLiveProject, history, historyMeta }) {
+export default function HistoryTab({ projectId, isLiveProject, history, historyMeta, busy }) {
   const [range, setRange] = useState("7d")
 
   const filtered = useMemo(() => {
@@ -149,6 +149,20 @@ export default function HistoryTab({ projectId, isLiveProject, history, historyM
 
         <div className="card">
           <div className="empty-row">Audit history is available for live projects only.</div>
+        </div>
+      </div>
+    )
+  }
+
+  const hasLoaded = Boolean(historyMeta) || (Array.isArray(history) && history.length > 0)
+  if (!hasLoaded) {
+    return (
+      <div className="tab-content">
+        <h2 className="tab-title">Audit</h2>
+        <p className="tab-subtitle">Recent attestation events and onchain proof trail</p>
+
+        <div className="card">
+          <div className="empty-row">{busy ? "Syncing audit history..." : "No audit history loaded yet."}</div>
         </div>
       </div>
     )

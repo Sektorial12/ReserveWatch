@@ -16,7 +16,19 @@ const asText = (value) => {
   return String(value)
 }
 
-export default function OnchainTab({ onchain, links }) {
+export default function OnchainTab({ onchain, links, busy }) {
+  if (!onchain) {
+    return (
+      <div className="tab-content">
+        <h2 className="tab-title">Onchain State</h2>
+        <p className="tab-subtitle">Receiver and token contract state from Sepolia</p>
+        <div className="card">
+          <div className="empty-row">{busy ? "Syncing onchain state..." : "No onchain data loaded yet."}</div>
+        </div>
+      </div>
+    )
+  }
+
   const receiver = onchain?.receiver || {}
   const token = onchain?.token || {}
   const enforcement = onchain?.enforcement || {}
