@@ -12,6 +12,7 @@ import SettingsTab from "./components/SettingsTab"
 import PublicStatusPage from "./components/PublicStatusPage"
 import ReportTab from "./components/ReportTab"
 import StatusPill from "./components/StatusPill"
+import OnboardingWizardModal from "./components/OnboardingWizardModal"
 
 const POLL_MS = 8000
 const HISTORY_SWR_MS = 60000
@@ -183,6 +184,7 @@ export default function App() {
   const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
   const [draftPolicies, setDraftPolicies] = useState(() => readDraftPolicies())
   const [projectsModalOpen, setProjectsModalOpen] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
   const [status, setStatus] = useState(null)
   const [history, setHistory] = useState([])
@@ -620,6 +622,9 @@ export default function App() {
           </div>
         </div>
         <div className="header-actions">
+          <button className="btn btn-ghost" disabled={busy} onClick={() => setWizardOpen(true)}>
+            Start Wizard
+          </button>
           <button className="btn btn-ghost" disabled={busy} onClick={() => setProjectsModalOpen(true)}>
             Projects
           </button>
@@ -703,9 +708,14 @@ export default function App() {
             <p className="first-run-subtitle">
               Add an asset, connect data sources, and export a deployment bundle.
             </p>
-            <button className="btn btn-primary" onClick={() => setProjectsModalOpen(true)}>
-              Open Projects
-            </button>
+            <div className="wizard-first-run">
+              <button className="btn btn-primary" onClick={() => setWizardOpen(true)}>
+                Start Wizard
+              </button>
+              <button className="btn btn-ghost" onClick={() => setProjectsModalOpen(true)}>
+                Open Projects
+              </button>
+            </div>
           </div>
         </main>
       ) : (
@@ -866,6 +876,19 @@ export default function App() {
         onSaveDraftProjects={saveDraftProjects}
         onRenameDraftProjectId={renameDraftProjectId}
         activeProjectId={projectId}
+        onSelectProjectId={(id) => setProjectId(id || null)}
+      />
+
+      <OnboardingWizardModal
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        serverProjects={projects}
+        draftProjects={draftProjects}
+        draftConnectors={draftConnectors}
+        draftPolicies={draftPolicies}
+        onSaveDraftProjects={saveDraftProjects}
+        onSaveDraftConnectors={saveDraftConnectors}
+        onSaveDraftPolicies={saveDraftPolicies}
         onSelectProjectId={(id) => setProjectId(id || null)}
       />
 

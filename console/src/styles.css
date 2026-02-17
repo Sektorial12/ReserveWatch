@@ -566,6 +566,11 @@ body {
   color: var(--text-secondary);
 }
 
+.wizard-first-run {
+  display: flex;
+  gap: 12px;
+}
+
 .tab-content {
   animation: fadeIn 200ms ease;
 }
@@ -902,6 +907,7 @@ body {
   padding: 24px;
   z-index: 200;
 }
+
 .modal {
   width: min(1080px, 100%);
   max-height: min(760px, calc(100vh - 48px));
@@ -911,6 +917,7 @@ body {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow);
 }
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -919,23 +926,108 @@ body {
   padding: 18px 20px;
   border-bottom: 1px solid var(--border);
 }
+
 .modal-title {
   margin: 0;
   font-size: 1.1rem;
 }
+
 .modal-subtitle {
   margin: 6px 0 0 0;
   color: var(--text-secondary);
   font-size: 0.9rem;
 }
+
 .modal-body {
   padding: 18px 20px 20px 20px;
 }
+
+.wizard-steps {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  margin-bottom: 16px;
+  overflow-x: auto;
+}
+
+.wizard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.wizard-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.wizard-step.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  color: var(--text);
+}
+
+.wizard-step.active .wizard-step-dot {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.wizard-step.done {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.wizard-step.done .wizard-step-dot {
+  background: var(--accent);
+}
+
+.wizard-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wizard-test {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.wizard-test.ok {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+.wizard-test.bad {
+  border-color: var(--danger);
+  background: var(--danger-glow);
+  color: var(--danger);
+}
+
 .modal-split {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
+
 .modal-pane {
   background: var(--surface-elevated);
   border: 1px solid var(--border);
