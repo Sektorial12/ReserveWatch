@@ -13,6 +13,7 @@ import PublicStatusPage from "./components/PublicStatusPage"
 import ReportTab from "./components/ReportTab"
 import StatusPill from "./components/StatusPill"
 import OnboardingWizardModal from "./components/OnboardingWizardModal"
+import useClientMonitor from "./hooks/useClientMonitor"
 
 const POLL_MS = 8000
 const HISTORY_SWR_MS = 60000
@@ -186,11 +187,11 @@ export default function App() {
   const [projectsModalOpen, setProjectsModalOpen] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
-  const [status, setStatus] = useState(null)
+  const [liveStatus, setLiveStatus] = useState(null)
   const [history, setHistory] = useState([])
   const [historyMeta, setHistoryMeta] = useState(null)
-  const [error, setError] = useState("")
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null)
+  const [liveError, setLiveError] = useState("")
+  const [liveLastUpdatedAt, setLiveLastUpdatedAt] = useState(null)
   const [incidentMessage, setIncidentMessage] = useState("")
   const [activeTab, setActiveTab] = useState("monitor")
 
@@ -214,11 +215,55 @@ export default function App() {
     draftProjectsRef.current = draftProjects
   }, [draftProjects])
 
+  const selectedDraft = useMemo(() => {
+    if (!projectId) return null
+    return draftProjects.find((p) => p.id === projectId) || null
+  }, [draftProjects, projectId])
+
+  const selectedLive = useMemo(() => {
+    if (!projectId) return null
+    return projects.find((p) => p.id === projectId) || null
+  }, [projects, projectId])
+
+  const isLiveProject = useMemo(() => {
+    if (!projectId) return false
+    return projects.some((p) => p.id === projectId)
+  }, [projects, projectId])
+
+  const draftConnectorsForProject = useMemo(() => {
+    if (!projectId) return []
+    return (draftConnectors || []).filter((c) => c && c.projectId === projectId)
+  }, [draftConnectors, projectId])
+
+  const draftPolicyForProject = useMemo(() => {
+    if (!projectId) return null
+    return (draftPolicies || []).find((p) => p && p.projectId === projectId) || null
+  }, [draftPolicies, projectId])
+
+  const clientMonitorEnabled = Boolean(projectId && !isLiveProject && selectedDraft)
+  const {
+    status: clientStatus,
+    error: clientError,
+    busy: clientBusy,
+    lastUpdatedAt: clientLastUpdatedAt,
+    refresh: refreshClientStatus,
+  } = useClientMonitor({
+    enabled: clientMonitorEnabled,
+    project: selectedDraft,
+    connectors: draftConnectorsForProject,
+    policy: draftPolicyForProject,
+    pollMs: POLL_MS,
+  })
+
+  const status = isLiveProject ? liveStatus : clientStatus
+  const error = isLiveProject ? liveError : clientError
+  const lastUpdatedAt = isLiveProject ? liveLastUpdatedAt : clientLastUpdatedAt
+
   const derived = status?.derived || {}
   const receiver = status?.onchain?.receiver || {}
   const token = status?.onchain?.token || {}
   const incident = status?.incident || null
-  const effectiveBusy = busy || polling
+  const effectiveBusy = busy || polling || (!isLiveProject && clientBusy)
 
   const statusValue = typeof derived.status === "string" ? derived.status : "STALE"
 
@@ -239,21 +284,6 @@ export default function App() {
 
   const hasAnyProjects = projects.length > 0 || draftProjects.length > 0
 
-  const selectedDraft = useMemo(() => {
-    if (!projectId) return null
-    return draftProjects.find((p) => p.id === projectId) || null
-  }, [draftProjects, projectId])
-
-  const selectedLive = useMemo(() => {
-    if (!projectId) return null
-    return projects.find((p) => p.id === projectId) || null
-  }, [projects, projectId])
-
-  const isLiveProject = useMemo(() => {
-    if (!projectId) return false
-    return projects.some((p) => p.id === projectId)
-  }, [projects, projectId])
-
   const projectDisplayName = useMemo(() => {
     if (selectedLive?.name) return selectedLive.name
     if (selectedDraft?.name) return selectedDraft.name
@@ -264,18 +294,30 @@ export default function App() {
   const rpcBlock = status?.onchain?.blockNumber
 
   const loadProjects = useCallback(async () => {
-    const data = await fetchJson("/api/projects", { timeoutMs: 8000 })
-    const allProjects = Array.isArray(data?.projects) ? data.projects : []
     const urlProject = fromUrlProject()
-
     const draftIds = (draftProjectsRef.current || []).map((p) => p.id)
-    const allIds = new Set([...allProjects.map((p) => p.id), ...draftIds].filter(Boolean))
-    const defaultId = data?.defaultProjectId || allProjects[0]?.id || draftIds[0] || null
-    const selected = urlProject && allIds.has(urlProject) ? urlProject : defaultId
 
-    setProjects(allProjects)
-    setProjectId(selected)
-    if (selected) writeUrlProject(selected)
+    try {
+      const data = await fetchJson("/api/projects", { timeoutMs: 8000 })
+      const allProjects = Array.isArray(data?.projects) ? data.projects : []
+
+      const allIds = new Set([...allProjects.map((p) => p.id), ...draftIds].filter(Boolean))
+      const defaultId = data?.defaultProjectId || allProjects[0]?.id || draftIds[0] || null
+      const selected = urlProject && allIds.has(urlProject) ? urlProject : defaultId
+
+      setProjects(allProjects)
+      setProjectId(selected)
+      if (selected) writeUrlProject(selected)
+      setLiveError("")
+    } catch {
+      const allIds = new Set(draftIds.filter(Boolean))
+      const selected = urlProject && allIds.has(urlProject) ? urlProject : draftIds[0] || null
+
+      setProjects([])
+      setProjectId(selected)
+      if (selected) writeUrlProject(selected)
+      setLiveError("")
+    }
   }, [])
 
   const loadPublicStatus = useCallback(async () => {
@@ -307,15 +349,11 @@ export default function App() {
       const live = activeProjectId ? projects.some((p) => p.id === activeProjectId) : false
 
       if (!activeProjectId || !live) {
-        setStatus(null)
+        setLiveStatus(null)
         setHistory([])
         setHistoryMeta(null)
-        setLastUpdatedAt(Date.now())
-        setError(
-          activeProjectId
-            ? `Draft project '${activeProjectId}' is not deployed. Use Projects → Export to deploy it.`
-            : "No project selected"
-        )
+        setLiveLastUpdatedAt(Date.now())
+        setLiveError("")
         return
       }
 
@@ -323,9 +361,9 @@ export default function App() {
 
       const cachedStatus = statusCacheRef.current.get(activeProjectId)
       if (cachedStatus?.data) {
-        setStatus(cachedStatus.data)
+        setLiveStatus(cachedStatus.data)
       } else {
-        setStatus(null)
+        setLiveStatus(null)
       }
 
       const cachedHistory = historyCacheRef.current.get(activeProjectId)
@@ -353,13 +391,13 @@ export default function App() {
       const [statusResult, historyResult] = await Promise.allSettled(requests)
 
       if (statusResult.status === "fulfilled") {
-        setStatus(statusResult.value)
+        setLiveStatus(statusResult.value)
         statusCacheRef.current.set(activeProjectId, { data: statusResult.value, fetchedAt: Date.now() })
-        setLastUpdatedAt(Date.now())
-        setError("")
+        setLiveLastUpdatedAt(Date.now())
+        setLiveError("")
       } else {
-        setError(String(statusResult.reason?.message || statusResult.reason || "Status fetch failed"))
-        setLastUpdatedAt(Date.now())
+        setLiveError(String(statusResult.reason?.message || statusResult.reason || "Status fetch failed"))
+        setLiveLastUpdatedAt(Date.now())
       }
 
       if (!shouldFetchHistory) {
@@ -412,7 +450,7 @@ export default function App() {
         await fn()
         await loadData(overrideProjectId, loadOptions)
       } catch (err) {
-        setError(String(err?.message || err))
+        setLiveError(String(err?.message || err))
       } finally {
         busyRef.current = false
         if (!silent) setBusy(false)
@@ -434,7 +472,7 @@ export default function App() {
       try {
         await loadProjects()
       } catch (err) {
-        setError(String(err?.message || err))
+        setLiveError(String(err?.message || err))
       } finally {
         setBusy(false)
       }
@@ -452,6 +490,11 @@ export default function App() {
 
   useEffect(() => {
     if (!projectId) return
+
+    if (!isLiveProject) {
+      writeUrlProject(projectId)
+      return
+    }
 
     void withAction(async () => {
       writeUrlProject(projectId)
@@ -655,16 +698,21 @@ export default function App() {
           </select>
           <button
             className="btn btn-primary"
-            disabled={busy}
-            onClick={() =>
+            disabled={effectiveBusy}
+            onClick={() => {
+              if (!projectId) return
+              if (!isLiveProject) {
+                void refreshClientStatus()
+                return
+              }
               void withAction(
                 async () => {},
                 projectId,
                 activeTab === "audit" || activeTab === "report" ? { forceHistory: true } : null
               )
-            }
+            }}
           >
-            {busy ? "Syncing..." : "Refresh"}
+            {effectiveBusy ? "Syncing..." : "Refresh"}
           </button>
         </div>
       </header>
@@ -677,10 +725,10 @@ export default function App() {
           {projectDisplayName && <span className="env-label">{projectDisplayName}</span>}
         </div>
         <div className="env-banner-right">
-          {isLiveProject && <StatusPill status={statusValue} />}
-          {busy && <span className="env-pill env-mode">Syncing…</span>}
-          {isLiveProject && <span className="env-pill env-mode">Mode: {status?.mode || "--"}</span>}
-          {isLiveProject && (
+          {projectId && <StatusPill status={statusValue} />}
+          {effectiveBusy && <span className="env-pill env-mode">Syncing…</span>}
+          {projectId && <span className="env-pill env-mode">Mode: {status?.mode || "--"}</span>}
+          {projectId && (
             <span className={`env-pill ${rpcHealthy ? "env-ok" : "env-bad"}`}>
               RPC: {rpcHealthy ? (rpcBlock ? `ok @ ${rpcBlock}` : "ok") : "error"}
             </span>
@@ -689,7 +737,7 @@ export default function App() {
         </div>
       </div>
 
-      {isLiveProject && error && (
+      {error && (
         <div className="error-banner">
           <strong>Error:</strong> {error}
         </div>
@@ -728,7 +776,7 @@ export default function App() {
             mintingPaused={receiver.mintingPaused}
             mintingEnabled={token.mintingEnabled}
             lastUpdatedAt={lastUpdatedAt}
-            busy={busy}
+            busy={effectiveBusy}
             reasons={reasons}
           />
 
