@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react"
 
+import {
+  createPublicClient,
+  http,
+  isAddress,
+  parseAbi,
+  recoverMessageAddress,
+} from "viem"
+import { arbitrum, avalanche, base, bsc, mainnet, optimism, polygon, sepolia } from "viem/chains"
+
+import StatusPill from "./StatusPill"
+
 const emptyProject = {
   id: "",
   name: "",
@@ -13,6 +24,44 @@ const emptyProject = {
   maxReserveAgeS: "",
   maxReserveMismatchRatio: "",
 }
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+const normalizeAddress = (addr) => {
+  if (!addr) return ""
+  return String(addr).trim().toLowerCase()
+}
+
+const resolveChain = (chainSelectorName) => {
+  const key = String(chainSelectorName || "")
+    .trim()
+    .toLowerCase()
+
+  if (!key) return sepolia
+  if (key.includes("sepolia")) return sepolia
+  if (key.includes("mainnet") || key === "ethereum") return mainnet
+  if (key.includes("polygon")) return polygon
+  if (key.includes("arbitrum")) return arbitrum
+  if (key.includes("optimism")) return optimism
+  if (key.includes("base")) return base
+  if (key.includes("avalanche")) return avalanche
+  if (key.includes("bsc") || key.includes("binance")) return bsc
+
+  return sepolia
+}
+
+const receiverAbi = parseAbi([
+  "function lastCoverageBps() view returns (uint256)",
+  "function minCoverageBps() view returns (uint256)",
+  "function mintingPaused() view returns (bool)",
+  "function owner() view returns (address)",
+  "function getForwarderAddress() view returns (address)",
+])
+
+const tokenAbi = parseAbi([
+  "function totalSupply() view returns (uint256)",
+  "function mintingEnabled() view returns (bool)",
+])
 
 const normalizeId = (value) => String(value || "").trim()
 
@@ -44,6 +93,187 @@ const downloadText = (filename, content, contentType = "application/json") => {
     setTimeout(() => URL.revokeObjectURL(url), 500)
   } catch {
     return
+  }
+}
+
+const toFiniteNumber = (value) => {
+  if (value === null || value === undefined) return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+const reserveMessage = ({ timestamp, reserveUsd, navUsd, source }) => {
+  const ts = Number(timestamp)
+  const r = String(reserveUsd)
+  const s = String(source || "")
+  if (navUsd !== undefined && navUsd !== null) {
+    return `ReserveWatch:v2|source=${s}|reserveUsd=${r}|navUsd=${String(navUsd)}|timestamp=${ts}`
+  }
+  return `ReserveWatch:v1|source=${s}|reserveUsd=${r}|timestamp=${ts}`
+}
+
+const verifyReserveSignature = async ({ reserve, expectedSigner }) => {
+  const signature = reserve?.signature
+  const declaredSigner = reserve?.signer
+  const expected = String(expectedSigner || "").trim()
+
+  if (!signature || !declaredSigner) {
+    return {
+      signatureValid: expected ? false : null,
+      recoveredSigner: null,
+      signatureError: expected ? "missing signer/signature" : null,
+    }
+  }
+
+  try {
+    const recoveredSigner = await recoverMessageAddress({
+      message: reserveMessage(reserve),
+      signature,
+    })
+
+    const okDeclared = normalizeAddress(recoveredSigner) === normalizeAddress(declaredSigner)
+    const okExpected = expected ? normalizeAddress(recoveredSigner) === normalizeAddress(expected) : null
+
+    if (expected) {
+      return {
+        signatureValid: Boolean(okDeclared && okExpected),
+        recoveredSigner,
+        signatureError: null,
+      }
+    }
+
+    return {
+      signatureValid: okDeclared,
+      recoveredSigner,
+      signatureError: null,
+    }
+  } catch (err) {
+    return {
+      signatureValid: expected ? false : null,
+      recoveredSigner: null,
+      signatureError: String(err?.message || err),
+    }
+  }
+}
+
+const computeDerivedPreview = ({ reserves, onchain, project, policy }) => {
+  const now = Math.floor(Date.now() / 1000)
+
+  const consensusMode = policy?.consensusMode || "require_match"
+
+  const primarySigInvalid = reserves?.primary?.signatureValid === false
+  const secondarySigInvalid = reserves?.secondary?.signatureValid === false
+  const reserveSignatureInvalid =
+    consensusMode === "primary_only" ? primarySigInvalid : primarySigInvalid || secondarySigInvalid
+
+  const maxReserveAgeS = (() => {
+    const fromPolicy = toFiniteNumber(policy?.maxReserveAgeS)
+    if (Number.isFinite(fromPolicy)) return fromPolicy
+    const fromProject = toFiniteNumber(project?.maxReserveAgeS)
+    if (Number.isFinite(fromProject)) return fromProject
+    return 120
+  })()
+
+  const maxMismatchRatio = (() => {
+    const fromPolicy = toFiniteNumber(policy?.maxMismatchRatio)
+    if (Number.isFinite(fromPolicy)) return fromPolicy
+    const fromProject = toFiniteNumber(project?.maxReserveMismatchRatio)
+    if (Number.isFinite(fromProject)) return fromProject
+    return 0.01
+  })()
+
+  const minCoverageBpsOverride = toFiniteNumber(policy?.minCoverageBps)
+
+  const primaryTs = reserves?.primary?.timestamp
+  const secondaryTs = reserves?.secondary?.timestamp
+
+  const primaryAgeS = typeof primaryTs === "number" ? now - primaryTs : null
+  const secondaryAgeS = typeof secondaryTs === "number" ? now - secondaryTs : null
+
+  const primaryOk = Boolean(reserves?.primary && typeof primaryTs === "number")
+  const secondaryOk = Boolean(reserves?.secondary && typeof secondaryTs === "number")
+
+  const reserveStale = (() => {
+    if (!Number.isFinite(maxReserveAgeS)) return false
+
+    if (consensusMode === "primary_only") {
+      if (!primaryOk || primarySigInvalid) return true
+      return typeof primaryAgeS === "number" ? primaryAgeS > maxReserveAgeS : true
+    }
+
+    if (!primaryOk || !secondaryOk || primarySigInvalid || secondarySigInvalid) return true
+
+    return (
+      (typeof primaryAgeS === "number" && primaryAgeS > maxReserveAgeS) ||
+      (typeof secondaryAgeS === "number" && secondaryAgeS > maxReserveAgeS)
+    )
+  })()
+
+  const primaryReserveUsd = toFiniteNumber(reserves?.primary?.reserveUsd)
+  const secondaryReserveUsd = toFiniteNumber(reserves?.secondary?.reserveUsd)
+
+  let reserveMismatchUsd = null
+  let reserveMismatchRatio = null
+  let sourceMismatch = false
+
+  if (typeof primaryReserveUsd === "number" && typeof secondaryReserveUsd === "number") {
+    reserveMismatchUsd = Math.abs(primaryReserveUsd - secondaryReserveUsd)
+    const denom = Math.max(primaryReserveUsd, secondaryReserveUsd, 1)
+    reserveMismatchRatio = reserveMismatchUsd / denom
+    if (consensusMode === "require_match") {
+      sourceMismatch = reserveMismatchRatio > maxMismatchRatio
+    }
+  }
+
+  const coverageBps = toFiniteNumber(onchain?.receiver?.lastCoverageBps)
+  const onchainMinCoverageBps = toFiniteNumber(onchain?.receiver?.minCoverageBps)
+  const minCoverageBps = Number.isFinite(minCoverageBpsOverride) ? minCoverageBpsOverride : onchainMinCoverageBps
+
+  const mintingPaused = onchain?.receiver?.mintingPaused
+  const mintingEnabled = onchain?.token?.mintingEnabled
+  const enforcementHookWired = Boolean(onchain?.enforcement?.hookWired)
+  const forwarderSet = Boolean(onchain?.enforcement?.forwarderSet)
+
+  const reasons = []
+  if (onchain?.error) reasons.push("onchain_unavailable")
+  if (reserveStale) reasons.push("reserve_data_stale")
+  if (reserveSignatureInvalid) reasons.push("reserve_signature_invalid")
+  if (sourceMismatch) reasons.push("reserve_source_mismatch")
+  if (!enforcementHookWired) reasons.push("enforcement_not_wired")
+  if (!forwarderSet) reasons.push("forwarder_not_set")
+  if (mintingPaused === true) reasons.push("minting_paused")
+  if (mintingEnabled === false) reasons.push("minting_disabled")
+  if (Number.isFinite(coverageBps) && Number.isFinite(minCoverageBps) && coverageBps < minCoverageBps) {
+    reasons.push("coverage_below_threshold")
+  }
+
+  let status = "HEALTHY"
+  if (onchain?.error || reserveStale || reserveSignatureInvalid) status = "STALE"
+  else if (sourceMismatch) status = "DEGRADED"
+  else if (!enforcementHookWired) status = "DEGRADED"
+  else if (!forwarderSet) status = "DEGRADED"
+  else if (reasons.includes("coverage_below_threshold") || reasons.includes("minting_paused") || reasons.includes("minting_disabled")) {
+    status = "UNHEALTHY"
+  }
+
+  return {
+    now,
+    consensusMode,
+    maxReserveAgeS,
+    maxMismatchRatio,
+    minCoverageBps,
+    reserveAgesS: {
+      primary: primaryAgeS,
+      secondary: secondaryAgeS,
+    },
+    reserveStale,
+    reserveSignatureInvalid,
+    sourceMismatch,
+    reserveMismatchUsd,
+    reserveMismatchRatio,
+    coverageBps,
+    status,
+    reasons,
   }
 }
 
@@ -174,6 +404,19 @@ export default function OnboardingWizardModal({
   const [testBusy, setTestBusy] = useState(null)
   const [testResult, setTestResult] = useState({ primary: null, secondary: null })
 
+  const [projectValidateBusy, setProjectValidateBusy] = useState(false)
+  const [projectValidateResult, setProjectValidateResult] = useState(null)
+  const [onchainSnapshot, setOnchainSnapshot] = useState(null)
+
+  useEffect(() => {
+    setProjectValidateResult(null)
+    setOnchainSnapshot(null)
+  }, [projectForm.chainSelectorName, projectForm.rpcUrl, projectForm.receiverAddress, projectForm.liabilityTokenAddress, projectForm.expectedForwarderAddress])
+
+  useEffect(() => {
+    setTestResult({ primary: null, secondary: null })
+  }, [connectForm.primary?.url, connectForm.primary?.expectedSigner, connectForm.secondary?.url, connectForm.secondary?.expectedSigner])
+
   useEffect(() => {
     if (!open) return
     setStepIdx(0)
@@ -192,6 +435,10 @@ export default function OnboardingWizardModal({
     setCopied(false)
     setTestBusy(null)
     setTestResult({ primary: null, secondary: null })
+
+    setProjectValidateBusy(false)
+    setProjectValidateResult(null)
+    setOnchainSnapshot(null)
   }, [open])
 
   const draftProjectId = normalizeId(projectForm.id)
@@ -311,6 +558,11 @@ export default function OnboardingWizardModal({
     const secondaryName = String(connectForm.secondary?.name || "").trim()
     if (!secondaryName) return "Secondary reserve feed name is required"
 
+    if (!testResult?.primary) return "Run the primary Test before continuing"
+    if (!testResult?.secondary) return "Run the secondary Test before continuing"
+    if (testResult?.primary?.ok !== true) return "Primary test must pass before continuing"
+    if (testResult?.secondary?.ok !== true) return "Secondary test must pass before continuing"
+
     return ""
   }
 
@@ -408,7 +660,96 @@ export default function OnboardingWizardModal({
     onSaveDraftPolicies([...rest, clean])
   }
 
-  const onNext = () => {
+  const validateProjectOnchain = async () => {
+    const rpcUrl = String(projectForm.rpcUrl || "").trim()
+    const chain = resolveChain(projectForm.chainSelectorName)
+    const receiverAddress = String(projectForm.receiverAddress || "").trim()
+    const liabilityTokenAddress = String(projectForm.liabilityTokenAddress || "").trim()
+    const expectedForwarder = String(projectForm.expectedForwarderAddress || "").trim()
+
+    if (!rpcUrl) throw new Error("RPC URL is required")
+    if (!receiverAddress || !isAddress(receiverAddress)) throw new Error("Receiver address is invalid")
+    if (!liabilityTokenAddress || !isAddress(liabilityTokenAddress)) throw new Error("Liability token address is invalid")
+
+    const client = createPublicClient({
+      chain,
+      transport: http(rpcUrl, { timeout: 15_000 }),
+    })
+
+    const [blockNumber, receiverState, tokenState] = await Promise.all([
+      client.getBlockNumber(),
+      Promise.all([
+        client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "lastCoverageBps" }),
+        client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "minCoverageBps" }),
+        client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "mintingPaused" }),
+        client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "owner" }),
+        client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "getForwarderAddress" }),
+      ]),
+      Promise.all([
+        client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "totalSupply" }),
+        client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "mintingEnabled" }),
+      ]),
+    ])
+
+    const [lastCoverageBps, minCoverageBps, mintingPaused, receiverOwner, forwarderAddress] = receiverState
+    const [totalSupply, mintingEnabled] = tokenState
+
+    const forwarderSet = Boolean(forwarderAddress) && normalizeAddress(forwarderAddress) !== ZERO_ADDRESS
+    const hookWired = forwarderSet
+    const forwarderMatchesExpected = expectedForwarder
+      ? normalizeAddress(forwarderAddress) === normalizeAddress(expectedForwarder)
+      : null
+
+    return {
+      blockNumber: blockNumber.toString(),
+      receiverAddress: normalizeAddress(receiverAddress),
+      liabilityTokenAddress: normalizeAddress(liabilityTokenAddress),
+      error: "",
+      receiver: {
+        lastCoverageBps: lastCoverageBps.toString(),
+        minCoverageBps: minCoverageBps.toString(),
+        mintingPaused: Boolean(mintingPaused),
+        owner: receiverOwner,
+        forwarderAddress,
+      },
+      token: {
+        totalSupply: totalSupply.toString(),
+        mintingEnabled: Boolean(mintingEnabled),
+      },
+      enforcement: {
+        hookWired,
+        forwarderSet,
+        expectedForwarder: expectedForwarder || null,
+        forwarderMatchesExpected,
+      },
+    }
+  }
+
+  const runProjectValidation = async ({ bubbleError } = {}) => {
+    setProjectValidateBusy(true)
+    setProjectValidateResult(null)
+    setOnchainSnapshot(null)
+
+    try {
+      const onchain = await validateProjectOnchain()
+      setProjectValidateResult({
+        at: Date.now(),
+        ok: true,
+        message: `ok block=${onchain.blockNumber} coverage=${onchain.receiver.lastCoverageBps} min=${onchain.receiver.minCoverageBps}`,
+      })
+      setOnchainSnapshot(onchain)
+      return { ok: true, onchain }
+    } catch (err) {
+      const message = String(err?.message || err)
+      setProjectValidateResult({ at: Date.now(), ok: false, message })
+      if (bubbleError) setError(message)
+      return { ok: false, message }
+    } finally {
+      setProjectValidateBusy(false)
+    }
+  }
+
+  const onNext = async () => {
     setError("")
 
     if (step === "project") {
@@ -417,6 +758,10 @@ export default function OnboardingWizardModal({
         setError(msg)
         return
       }
+
+      const onchainRes = await runProjectValidation({ bubbleError: true })
+      if (!onchainRes.ok) return
+
       persistProject()
       setStepIdx((s) => Math.min(steps.length - 1, s + 1))
       return
@@ -445,6 +790,7 @@ export default function OnboardingWizardModal({
     }
 
     if (step === "export") {
+      if (draftProjectId && typeof onSelectProjectId === "function") onSelectProjectId(draftProjectId)
       if (typeof onClose === "function") onClose()
     }
   }
@@ -460,6 +806,8 @@ export default function OnboardingWizardModal({
     if (!url) return
 
     setTestBusy(key)
+
+    const startedAt = Date.now()
 
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12000)
@@ -480,38 +828,69 @@ export default function OnboardingWizardModal({
       const timestamp = data?.timestamp
       const reserveUsd = data?.reserveUsd
       const navUsd = data?.navUsd
+      const source = data?.source
       const signer = data?.signer
       const signature = data?.signature
 
-      if (!timestamp || !reserveUsd) {
+      const parsedTimestamp = typeof timestamp === "number" ? timestamp : Number(timestamp)
+
+      if (!Number.isFinite(parsedTimestamp) || reserveUsd === null || reserveUsd === undefined || reserveUsd === "") {
         throw new Error("Response missing required fields (timestamp, reserveUsd)")
       }
 
-      const expectedSigner = String(cfg?.expectedSigner || "").trim()
-      if (expectedSigner) {
-        const okSigner = String(signer || "").toLowerCase() === expectedSigner.toLowerCase()
-        if (!okSigner) {
-          throw new Error("Signer does not match expected signer")
-        }
-        if (!signature) {
-          throw new Error("Response missing signature")
-        }
+      if (source !== undefined && source !== null && !String(source).trim()) {
+        throw new Error("Response field source must be a non-empty string")
       }
+
+      const parsedReserve = {
+        timestamp: parsedTimestamp,
+        reserveUsd,
+        navUsd,
+        source: source || (key === "primary" ? "primary" : "secondary"),
+        signer,
+        signature,
+      }
+
+      const expectedSigner = String(cfg?.expectedSigner || "").trim()
+
+      const sig = await verifyReserveSignature({ reserve: parsedReserve, expectedSigner })
+
+      if (expectedSigner && sig.signatureValid !== true) {
+        throw new Error(sig.signatureError || "Signature verification failed")
+      }
+
+      const latencyMs = Date.now() - startedAt
+      const ageS = Math.max(0, Math.floor(Date.now() / 1000) - parsedTimestamp)
+
+      const signerLine = signer ? ` signer=${signer}` : ""
+      const sigLine = expectedSigner ? ` sig=${sig.signatureValid ? "ok" : "bad"}` : ""
 
       setTestResult((s) => ({
         ...s,
         [key]: {
           at: Date.now(),
           ok: true,
-          message: `ok reserveUsd=${reserveUsd}${navUsd ? ` navUsd=${navUsd}` : ""} ts=${timestamp}${signer ? ` signer=${signer}` : ""}`,
+          latencyMs,
+          ageS,
+          reserve: {
+            ...parsedReserve,
+            signatureValid: sig.signatureValid,
+            recoveredSigner: sig.recoveredSigner,
+            signatureError: sig.signatureError,
+          },
+          message: `ok reserveUsd=${reserveUsd}${navUsd ? ` navUsd=${navUsd}` : ""} ts=${parsedTimestamp} age=${ageS}s latency=${latencyMs}ms${signerLine}${sigLine}`,
         },
       }))
     } catch (err) {
+      const latencyMs = Date.now() - startedAt
       setTestResult((s) => ({
         ...s,
         [key]: {
           at: Date.now(),
           ok: false,
+          latencyMs,
+          ageS: null,
+          reserve: null,
           message: String(err?.message || err),
         },
       }))
@@ -662,6 +1041,22 @@ export default function OnboardingWizardModal({
                   />
                 </label>
               </div>
+
+              <div className="form-actions">
+                <button
+                  className="btn btn-ok"
+                  disabled={projectValidateBusy}
+                  onClick={() => void runProjectValidation({ bubbleError: true })}
+                >
+                  {projectValidateBusy ? "Validating..." : "Validate onchain"}
+                </button>
+              </div>
+
+              {projectValidateResult && (
+                <div className={projectValidateResult.ok ? "wizard-test ok" : "wizard-test bad"}>
+                  {projectValidateResult.ok ? "Onchain ok" : "Onchain failed"} · {projectValidateResult.message}
+                </div>
+              )}
             </div>
           )}
 
@@ -829,11 +1224,62 @@ export default function OnboardingWizardModal({
                   />
                 </label>
               </div>
+
+              {(() => {
+                const reserves = {
+                  primary: testResult?.primary?.reserve || null,
+                  secondary: testResult?.secondary?.reserve || null,
+                }
+
+                if (!draftProjectId) return null
+                if (!reserves.primary && !reserves.secondary) return null
+
+                const derived = computeDerivedPreview({
+                  reserves,
+                  onchain: onchainSnapshot,
+                  project: projectForm,
+                  policy: localPolicy,
+                })
+
+                return (
+                  <div className="card" style={{ marginTop: 12 }}>
+                    <div className="detail-header" style={{ marginBottom: 8 }}>
+                      <div>
+                        <div className="section-title">Preview</div>
+                        <div className="tab-subtitle">Based on the last source tests + onchain validation</div>
+                      </div>
+                      <StatusPill status={derived.status} />
+                    </div>
+
+                    {derived?.reasons?.length ? (
+                      <div className="empty-state">Reasons: {derived.reasons.join(", ")}</div>
+                    ) : (
+                      <div className="empty-state">No reasons</div>
+                    )}
+                  </div>
+                )
+              })()}
             </div>
           )}
 
           {step === "export" && (
             <div className="export">
+              <div className="card" style={{ marginBottom: 12 }}>
+                <div className="section-title">Monitoring</div>
+                <div className="tab-subtitle">Draft projects are monitored client-side once selected.</div>
+                <div className="form-actions" style={{ marginTop: 8 }}>
+                  <button
+                    className="btn btn-ok"
+                    disabled={!draftProjectId}
+                    onClick={() => {
+                      if (draftProjectId && typeof onSelectProjectId === "function") onSelectProjectId(draftProjectId)
+                    }}
+                  >
+                    Select project & start monitor
+                  </button>
+                </div>
+              </div>
+
               {!activeExport ? (
                 <div className="empty-state">Complete the previous steps to generate an export bundle.</div>
               ) : (
