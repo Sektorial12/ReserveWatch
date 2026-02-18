@@ -60,6 +60,7 @@ const computePreview = ({ status, policy }) => {
   const reserves = status?.reserves || {}
   const onchain = status?.onchain || {}
   const incident = status?.incident || null
+  const derived = status?.derived || {}
 
   const consensusMode = policy?.consensusMode || "require_match"
   const maxReserveAgeS = toFiniteNumber(policy?.maxReserveAgeS)
@@ -82,6 +83,10 @@ const computePreview = ({ status, policy }) => {
       (typeof secondaryAgeS === "number" && secondaryAgeS > maxReserveAgeS)
     )
   })()
+
+  const reserveSignatureInvalid =
+    Boolean(derived?.reserveSignatureInvalid) ||
+    (Array.isArray(derived?.reasons) && derived.reasons.includes("reserve_signature_invalid"))
 
   const primaryReserveUsd = toFiniteNumber(reserves?.primary?.reserveUsd)
   const secondaryReserveUsd = toFiniteNumber(reserves?.secondary?.reserveUsd)
@@ -111,6 +116,7 @@ const computePreview = ({ status, policy }) => {
   const reasons = []
   if (onchain?.error) reasons.push("onchain_unavailable")
   if (reserveStale) reasons.push("reserve_data_stale")
+  if (reserveSignatureInvalid) reasons.push("reserve_signature_invalid")
   if (sourceMismatch) reasons.push("reserve_source_mismatch")
   if (incident?.active) reasons.push("incident_active")
   if (!enforcementHookWired) reasons.push("enforcement_not_wired")
@@ -122,7 +128,7 @@ const computePreview = ({ status, policy }) => {
   }
 
   let previewStatus = "HEALTHY"
-  if (onchain?.error || reserveStale) previewStatus = "STALE"
+  if (onchain?.error || reserveStale || reserveSignatureInvalid) previewStatus = "STALE"
   else if (sourceMismatch) previewStatus = "DEGRADED"
   else if (incident?.active) previewStatus = incident?.severity === "critical" ? "UNHEALTHY" : "DEGRADED"
   else if (!enforcementHookWired) previewStatus = "DEGRADED"
@@ -151,6 +157,39 @@ const computePreview = ({ status, policy }) => {
     reasons,
   }
 }
+
+const POLICY_TEMPLATES = [
+  {
+    id: "conservative_stablecoin",
+    label: "Conservative stablecoin",
+    policy: {
+      consensusMode: "require_match",
+      minCoverageBps: "10000",
+      maxReserveAgeS: "120",
+      maxMismatchRatio: "0.005",
+    },
+  },
+  {
+    id: "yield_bearing_rwa",
+    label: "Yield-bearing RWA",
+    policy: {
+      consensusMode: "primary_only",
+      minCoverageBps: "10000",
+      maxReserveAgeS: "300",
+      maxMismatchRatio: "0.02",
+    },
+  },
+  {
+    id: "multi_custodian",
+    label: "Multi-custodian",
+    policy: {
+      consensusMode: "conservative_min",
+      minCoverageBps: "10000",
+      maxReserveAgeS: "180",
+      maxMismatchRatio: "0.01",
+    },
+  },
+]
 
 export default function SettingsTab({
   projectId,
@@ -329,9 +368,76 @@ export default function SettingsTab({
   }, [derived, draftForm, draftProject])
 
   const preview = useMemo(() => {
-    if (!isLiveProject || !status) return null
+    if (!status) return null
     return computePreview({ status, policy: resolvedPolicy })
-  }, [isLiveProject, resolvedPolicy, status])
+  }, [resolvedPolicy, status])
+
+  const studio = useMemo(() => {
+    if (!status || !preview) return null
+
+    const currentDerived = status?.derived || {}
+    const currentStatus = typeof currentDerived?.status === "string" ? currentDerived.status : "STALE"
+    const currentReasons = Array.isArray(currentDerived?.reasons) ? currentDerived.reasons : []
+
+    const maxReserveAgeS = toFiniteNumber(preview?.maxReserveAgeS)
+    const maxMismatchRatio = toFiniteNumber(preview?.maxMismatchRatio)
+    const minCoverageBps = toFiniteNumber(preview?.minCoverageBps)
+
+    const primaryAgeS = toFiniteNumber(preview?.reserveAgesS?.primary)
+    const secondaryAgeS = toFiniteNumber(preview?.reserveAgesS?.secondary)
+    const maxObservedAgeS =
+      typeof primaryAgeS === "number" && typeof secondaryAgeS === "number"
+        ? Math.max(primaryAgeS, secondaryAgeS)
+        : typeof primaryAgeS === "number"
+          ? primaryAgeS
+          : typeof secondaryAgeS === "number"
+            ? secondaryAgeS
+            : null
+
+    const stalenessSlackS =
+      Number.isFinite(maxReserveAgeS) && typeof maxObservedAgeS === "number" ? Math.floor(maxReserveAgeS - maxObservedAgeS) : null
+
+    const mismatchRatio = toFiniteNumber(preview?.reserveMismatchRatio)
+    const mismatchSlack =
+      Number.isFinite(maxMismatchRatio) && typeof mismatchRatio === "number" ? maxMismatchRatio - mismatchRatio : null
+
+    const coverageBps = toFiniteNumber(status?.onchain?.receiver?.lastCoverageBps)
+    const coverageSlackBps =
+      Number.isFinite(minCoverageBps) && typeof coverageBps === "number" ? Math.floor(coverageBps - minCoverageBps) : null
+
+    const willChange = currentStatus !== preview.previewStatus
+
+    const policyLevers = {
+      canAffect: new Set([
+        "reserve_data_stale",
+        "reserve_source_mismatch",
+        "coverage_below_threshold",
+      ]),
+      cannotAffect: new Set([
+        "onchain_unavailable",
+        "reserve_signature_invalid",
+        "incident_active",
+        "enforcement_not_wired",
+        "forwarder_not_set",
+        "minting_paused",
+        "minting_disabled",
+      ]),
+    }
+
+    const nonPolicyReasons = preview.reasons.filter((r) => policyLevers.cannotAffect.has(r))
+
+    return {
+      currentStatus,
+      currentReasons,
+      previewStatus: preview.previewStatus,
+      previewReasons: preview.reasons,
+      willChange,
+      stalenessSlackS,
+      mismatchSlack,
+      coverageSlackBps,
+      nonPolicyReasons,
+    }
+  }, [preview, status])
 
   const enforcementReadiness = useMemo(() => {
     if (!isLiveProject || !status) return null
@@ -493,6 +599,28 @@ export default function SettingsTab({
             <p className="tab-subtitle">Saved in this browser. Used for export + preview.</p>
 
             <div className="form">
+              <div className="form-actions" style={{ justifyContent: "flex-start" }}>
+                {POLICY_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    className="btn btn-ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      setDraftForm({
+                        consensusMode: tpl.policy.consensusMode,
+                        minCoverageBps: tpl.policy.minCoverageBps,
+                        maxReserveAgeS: tpl.policy.maxReserveAgeS,
+                        maxMismatchRatio: tpl.policy.maxMismatchRatio,
+                      })
+                      setDraftSavedAt(null)
+                      setDraftError("")
+                    }}
+                  >
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
+
               <div className="form-grid">
                 <label className="field">
                   <span className="field-label">Consensus mode</span>
@@ -556,10 +684,63 @@ export default function SettingsTab({
           </div>
 
           <div className="detail-section">
+            <h3 className="section-title">Policy Studio</h3>
+            <p className="tab-subtitle">Simulate changes against the latest data and see what will flip status.</p>
+
+            {!studio ? (
+              <div className="card">
+                <div className="empty-row">Policy studio becomes available once status data is loaded.</div>
+              </div>
+            ) : (
+              <div className="detail-grid">
+                <div className="detail-card">
+                  <span className="detail-label">Current status</span>
+                  <span className="detail-value">
+                    <StatusPill status={studio.currentStatus} />
+                  </span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Preview status</span>
+                  <span className="detail-value">
+                    <StatusPill status={studio.previewStatus} />
+                  </span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Change</span>
+                  <span className="detail-value">{studio.willChange ? `${studio.currentStatus} → ${studio.previewStatus}` : "No change"}</span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Non-policy reasons</span>
+                  <span className="detail-value">
+                    {studio.nonPolicyReasons.length ? studio.nonPolicyReasons.join(", ") : "--"}
+                  </span>
+                </div>
+
+                <div className="detail-card">
+                  <span className="detail-label">Staleness slack (s)</span>
+                  <span className="detail-value">{formatMaybe(studio.stalenessSlackS)}</span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Mismatch slack</span>
+                  <span className="detail-value">{formatMaybe(studio.mismatchSlack)}</span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Coverage slack (bps)</span>
+                  <span className="detail-value">{formatMaybe(studio.coverageSlackBps)}</span>
+                </div>
+                <div className="detail-card">
+                  <span className="detail-label">Preview reasons</span>
+                  <span className="detail-value">{studio.previewReasons?.length ? studio.previewReasons.join(", ") : "--"}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="detail-section">
             <h3 className="section-title">Preview</h3>
             {!preview ? (
               <div className="card">
-                <div className="empty-row">Preview is available when a live project is selected.</div>
+                <div className="empty-row">Preview is available when status data is loaded.</div>
               </div>
             ) : (
               <div className="detail-grid">
