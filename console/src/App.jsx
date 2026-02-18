@@ -13,6 +13,7 @@ import PublicStatusPage from "./components/PublicStatusPage"
 import ReportTab from "./components/ReportTab"
 import StatusPill from "./components/StatusPill"
 import OnboardingWizardModal from "./components/OnboardingWizardModal"
+import AlertsTab from "./components/AlertsTab"
 import useClientMonitor from "./hooks/useClientMonitor"
 
 const POLL_MS = 8000
@@ -21,6 +22,7 @@ const HISTORY_SWR_MS = 60000
 const TABS = [
   { id: "monitor", label: "Live Monitor" },
   { id: "connectors", label: "Connectors" },
+  { id: "alerts", label: "Alerts" },
   { id: "policy", label: "Policy" },
   { id: "onchain", label: "Onchain" },
   { id: "report", label: "Report" },
@@ -75,6 +77,90 @@ const formatInt = (value) => {
 const DRAFT_PROJECTS_KEY = "reservewatch:draftProjects:v1"
 const DRAFT_CONNECTORS_KEY = "reservewatch:draftConnectors:v1"
 const DRAFT_POLICY_KEY = "reservewatch:draftPolicy:v1"
+
+const ALERT_ROUTING_KEY = "reservewatch:alertRouting:v1"
+const ALERT_RULES_KEY = "reservewatch:alertRules:v1"
+const ALERT_INCIDENTS_KEY = "reservewatch:alertIncidents:v1"
+
+const DEFAULT_ALERT_ROUTING = {
+  enableOutbound: false,
+  slackWebhookUrl: "",
+  discordWebhookUrl: "",
+}
+
+const DEFAULT_ALERT_RULES = {
+  coverageBreach: true,
+  sourceStale: true,
+  sourceMismatch: true,
+  rpcFailures: true,
+}
+
+const INCIDENT_COOLDOWN_MS = 30000
+const NOTIFY_COOLDOWN_MS = 5 * 60 * 1000
+const SNOOZE_MS = 15 * 60 * 1000
+
+const normalizeIncidentId = ({ projectId, reason }) => {
+  const pid = String(projectId || "").trim() || "unknown"
+  const r = String(reason || "").trim() || "unknown"
+  return `${pid}:${r}`
+}
+
+const reasonToSeverity = (reason) => {
+  if (reason === "coverage_below_threshold") return "critical"
+  return "warning"
+}
+
+const rulesAllowReason = (reason, rules) => {
+  const r = String(reason || "")
+  const cfg = rules || DEFAULT_ALERT_RULES
+  if (r === "coverage_below_threshold") return Boolean(cfg.coverageBreach)
+  if (r === "reserve_data_stale" || r === "reserve_signature_invalid") return Boolean(cfg.sourceStale)
+  if (r === "reserve_source_mismatch") return Boolean(cfg.sourceMismatch)
+  if (r === "onchain_unavailable") return Boolean(cfg.rpcFailures)
+  return false
+}
+
+const postWebhook = async ({ url, body }) => {
+  const cleanUrl = String(url || "").trim()
+  if (!cleanUrl) return
+  await fetch(cleanUrl, {
+    method: "POST",
+    mode: "no-cors",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body || {}),
+  })
+}
+
+const dispatchOutbound = async ({ routing, incident, statusValue }) => {
+  const cfg = routing || DEFAULT_ALERT_ROUTING
+  if (!cfg.enableOutbound) return
+
+  const pid = incident?.projectId || "--"
+  const reason = incident?.reason || "--"
+  const sev = incident?.severity || "warning"
+  const msg = `[ReserveWatch] ${pid} ${sev.toUpperCase()} ${reason} (status=${statusValue || "--"})`
+
+  const slack = String(cfg.slackWebhookUrl || "").trim()
+  const discord = String(cfg.discordWebhookUrl || "").trim()
+
+  try {
+    if (slack) {
+      await postWebhook({ url: slack, body: { text: msg } })
+    }
+  } catch {
+    return
+  }
+
+  try {
+    if (discord) {
+      await postWebhook({ url: discord, body: { content: msg } })
+    }
+  } catch {
+    return
+  }
+}
 
 const readDraftProjects = () => {
   try {
@@ -184,6 +270,36 @@ export default function App() {
   const [draftProjects, setDraftProjects] = useState(() => readDraftProjects())
   const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
   const [draftPolicies, setDraftPolicies] = useState(() => readDraftPolicies())
+  const [alertRouting, setAlertRouting] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(ALERT_ROUTING_KEY)
+      if (!raw) return DEFAULT_ALERT_ROUTING
+      const parsed = JSON.parse(raw)
+      return { ...DEFAULT_ALERT_ROUTING, ...(parsed || {}) }
+    } catch {
+      return DEFAULT_ALERT_ROUTING
+    }
+  })
+  const [alertRules, setAlertRules] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(ALERT_RULES_KEY)
+      if (!raw) return DEFAULT_ALERT_RULES
+      const parsed = JSON.parse(raw)
+      return { ...DEFAULT_ALERT_RULES, ...(parsed || {}) }
+    } catch {
+      return DEFAULT_ALERT_RULES
+    }
+  })
+  const [alertIncidents, setAlertIncidents] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(ALERT_INCIDENTS_KEY)
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : []
+    } catch {
+      return []
+    }
+  })
   const [projectsModalOpen, setProjectsModalOpen] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
@@ -264,6 +380,8 @@ export default function App() {
   const token = status?.onchain?.token || {}
   const incident = status?.incident || null
   const effectiveBusy = busy || polling || (!isLiveProject && clientBusy)
+
+  const reasons = Array.isArray(derived.reasons) ? derived.reasons : []
 
   const statusValue = typeof derived.status === "string" ? derived.status : "STALE"
 
@@ -579,6 +697,148 @@ export default function App() {
     writeDraftPolicies(next)
   }, [])
 
+  const saveAlertRouting = useCallback((next) => {
+    setAlertRouting(next)
+    try {
+      window.localStorage.setItem(ALERT_ROUTING_KEY, JSON.stringify(next))
+    } catch {
+      return
+    }
+  }, [])
+
+  const saveAlertRules = useCallback((next) => {
+    setAlertRules(next)
+    try {
+      window.localStorage.setItem(ALERT_RULES_KEY, JSON.stringify(next))
+    } catch {
+      return
+    }
+  }, [])
+
+  const writeAlertIncidents = useCallback((next) => {
+    try {
+      window.localStorage.setItem(ALERT_INCIDENTS_KEY, JSON.stringify(next))
+    } catch {
+      return
+    }
+  }, [])
+
+  const updateIncident = useCallback(
+    (id, updater) => {
+      setAlertIncidents((prev) => {
+        const arr = Array.isArray(prev) ? prev : []
+        const next = arr.map((inc) => {
+          if (!inc || inc.id !== id) return inc
+          return updater(inc)
+        })
+        writeAlertIncidents(next)
+        return next
+      })
+    },
+    [writeAlertIncidents]
+  )
+
+  const acknowledgeIncident = useCallback(
+    (id) => updateIncident(id, (inc) => ({ ...inc, state: "ack", updatedAt: Date.now() })),
+    [updateIncident]
+  )
+
+  const snoozeIncident = useCallback(
+    (id) =>
+      updateIncident(id, (inc) => ({ ...inc, state: "snoozed", snoozedUntil: Date.now() + SNOOZE_MS, updatedAt: Date.now() })),
+    [updateIncident]
+  )
+
+  const resolveIncident = useCallback(
+    (id) => updateIncident(id, (inc) => ({ ...inc, state: "resolved", updatedAt: Date.now() })),
+    [updateIncident]
+  )
+
+  const reopenIncident = useCallback(
+    (id) => updateIncident(id, (inc) => ({ ...inc, state: "open", snoozedUntil: null, updatedAt: Date.now() })),
+    [updateIncident]
+  )
+
+  const clearResolvedIncidents = useCallback(() => {
+    setAlertIncidents((prev) => {
+      const arr = Array.isArray(prev) ? prev : []
+      const next = arr.filter((inc) => inc && inc.state !== "resolved")
+      writeAlertIncidents(next)
+      return next
+    })
+  }, [writeAlertIncidents])
+
+  useEffect(() => {
+    if (!projectId) return
+    if (!status) return
+
+    const now = Date.now()
+    const firing = new Set(reasons.filter((r) => rulesAllowReason(r, alertRules)))
+    const outbound = []
+
+    setAlertIncidents((prev) => {
+      const arr = Array.isArray(prev) ? prev.filter(Boolean) : []
+      const byId = new Map(arr.map((inc) => [inc.id, inc]))
+
+      for (const reason of firing) {
+        const id = normalizeIncidentId({ projectId, reason })
+        const existing = byId.get(id)
+        const existingState = existing?.state || "open"
+        const snoozedUntil = existing?.snoozedUntil ? Number(existing.snoozedUntil) : null
+        const isSnoozed = existingState === "snoozed" && Number.isFinite(snoozedUntil) && snoozedUntil > now
+
+        if (isSnoozed) {
+          byId.set(id, { ...existing, active: true })
+          continue
+        }
+
+        const lastFiredAt = existing?.lastFiredAt ? Number(existing.lastFiredAt) : 0
+        const shouldCount = !Number.isFinite(lastFiredAt) || now - lastFiredAt > INCIDENT_COOLDOWN_MS
+
+        const lastNotifiedAt = existing?.lastNotifiedAt ? Number(existing.lastNotifiedAt) : 0
+        const shouldNotify =
+          Boolean(alertRouting?.enableOutbound) &&
+          (!Number.isFinite(lastNotifiedAt) || now - lastNotifiedAt > NOTIFY_COOLDOWN_MS)
+
+        const severity = reasonToSeverity(reason)
+        const nextState = existingState === "resolved" ? "open" : existingState
+
+        const next = {
+          id,
+          projectId,
+          reason,
+          severity,
+          state: nextState,
+          count: shouldCount ? Number(existing?.count || 0) + 1 : Number(existing?.count || 0),
+          createdAt: existing?.createdAt || now,
+          updatedAt: shouldCount ? now : existing?.updatedAt || now,
+          lastFiredAt: shouldCount ? now : existing?.lastFiredAt || now,
+          snoozedUntil: nextState === "snoozed" ? snoozedUntil : null,
+          active: true,
+          lastNotifiedAt: shouldNotify ? now : existing?.lastNotifiedAt || null,
+        }
+
+        byId.set(id, next)
+        if (shouldNotify) outbound.push(next)
+      }
+
+      const nextList = Array.from(byId.values()).map((inc) => {
+        if (!inc) return inc
+        if (inc.projectId !== projectId) return { ...inc, active: Boolean(inc.active) }
+        return { ...inc, active: firing.has(inc.reason) }
+      })
+
+      writeAlertIncidents(nextList)
+      return nextList
+    })
+
+    if (outbound.length) {
+      outbound.forEach((inc) => {
+        void dispatchOutbound({ routing: alertRouting, incident: inc, statusValue })
+      })
+    }
+  }, [alertRouting, alertRules, projectId, reasons, status, statusValue, writeAlertIncidents])
+
   const renameDraftProjectId = useCallback((oldId, newId) => {
     const from = String(oldId || "").trim()
     const to = String(newId || "").trim()
@@ -626,8 +886,6 @@ export default function App() {
       return next
     })
   }, [])
-
-  const reasons = Array.isArray(derived.reasons) ? derived.reasons : []
 
   if (isPublicStatusPage) {
     const pid = String(statusPathProjectId || "").trim()
@@ -832,6 +1090,33 @@ export default function App() {
                       sendIncident({ active: false, severity: "warning", message: "" })
                     )
                   }
+                  busy={effectiveBusy}
+                />
+              )}
+            </section>
+
+            <section
+              id="panel-alerts"
+              role="tabpanel"
+              aria-labelledby="tab-alerts"
+              hidden={activeTab !== "alerts"}
+              tabIndex={-1}
+            >
+              {activeTab === "alerts" && (
+                <AlertsTab
+                  projectId={projectId}
+                  isLiveProject={isLiveProject}
+                  serverIncident={incident}
+                  routing={alertRouting}
+                  onSaveRouting={saveAlertRouting}
+                  rules={alertRules}
+                  onSaveRules={saveAlertRules}
+                  incidents={alertIncidents}
+                  onAcknowledge={acknowledgeIncident}
+                  onSnooze={snoozeIncident}
+                  onResolve={resolveIncident}
+                  onReopen={reopenIncident}
+                  onClearResolved={clearResolvedIncidents}
                   busy={effectiveBusy}
                 />
               )}
