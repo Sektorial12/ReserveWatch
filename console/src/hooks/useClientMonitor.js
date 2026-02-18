@@ -181,11 +181,22 @@ const fetchReserve = async ({ url, fallbackSource, expectedSigner }) => {
 }
 
 const getOnchainStatus = async ({ project }) => {
-  const rpcUrl = project?.rpcUrl || ""
+  const rpcUrl = String(project?.rpcUrl || "").trim()
   const chain = resolveChain(project?.chainSelectorName)
 
-  const receiverAddress = String(project?.receiverAddress || "").toLowerCase()
-  const liabilityTokenAddress = String(project?.liabilityTokenAddress || "").toLowerCase()
+  const supplyRpcUrl = String(project?.supplyRpcUrl || "").trim() || rpcUrl
+  const supplyChain = resolveChain(project?.supplyChainSelectorName || project?.chainSelectorName)
+
+  const receiverAddress = String(project?.receiverAddress || "")
+    .trim()
+    .toLowerCase()
+  const liabilityTokenAddress = String(project?.liabilityTokenAddress || "")
+    .trim()
+    .toLowerCase()
+  const supplyLiabilityTokenAddress =
+    String(project?.supplyLiabilityTokenAddress || "")
+      .trim()
+      .toLowerCase() || liabilityTokenAddress
 
   if (!rpcUrl || !receiverAddress || !liabilityTokenAddress) {
     return {
@@ -201,8 +212,16 @@ const getOnchainStatus = async ({ project }) => {
     transport: http(rpcUrl, { timeout: 15_000 }),
   })
 
+  const supplyClient =
+    supplyRpcUrl === rpcUrl && supplyChain?.id === chain?.id
+      ? client
+      : createPublicClient({
+          chain: supplyChain,
+          transport: http(supplyRpcUrl, { timeout: 15_000 }),
+        })
+
   try {
-    const [blockNumber, receiverState, tokenState] = await Promise.all([
+    const [blockNumber, receiverState, tokenEnforcementState, supplyTotalSupply] = await Promise.all([
       client.getBlockNumber(),
       Promise.all([
         client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "lastAttestationHash" }),
@@ -216,11 +235,11 @@ const getOnchainStatus = async ({ project }) => {
         client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "getForwarderAddress" }),
       ]),
       Promise.all([
-        client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "totalSupply" }),
         client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "mintingEnabled" }),
         client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "guardian" }),
         client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "owner" }),
       ]),
+      supplyClient.readContract({ address: supplyLiabilityTokenAddress, abi: tokenAbi, functionName: "totalSupply" }),
     ])
 
     const [
@@ -242,7 +261,7 @@ const getOnchainStatus = async ({ project }) => {
       lastNavUsd = null
     }
 
-    const [totalSupply, mintingEnabled, guardian, tokenOwner] = tokenState
+    const [mintingEnabled, guardian, tokenOwner] = tokenEnforcementState
 
     const hookWired = normalizeAddress(guardian) === normalizeAddress(receiverAddress)
     const forwarderSet = normalizeAddress(forwarderAddress) !== ZERO_ADDRESS
@@ -260,6 +279,12 @@ const getOnchainStatus = async ({ project }) => {
       },
       receiverAddress,
       liabilityTokenAddress,
+      supplyChainSelectorName: String(project?.supplyChainSelectorName || "").trim() || null,
+      supplyRpcUrl: supplyRpcUrl === rpcUrl ? null : supplyRpcUrl,
+      supplyLiabilityTokenAddress:
+        normalizeAddress(supplyLiabilityTokenAddress) === normalizeAddress(liabilityTokenAddress)
+          ? null
+          : normalizeAddress(supplyLiabilityTokenAddress),
       receiver: {
         lastAttestationHash,
         lastReserveUsd: lastReserveUsd.toString(),
@@ -273,7 +298,7 @@ const getOnchainStatus = async ({ project }) => {
         forwarderAddress,
       },
       token: {
-        totalSupply: totalSupply.toString(),
+        totalSupply: supplyTotalSupply.toString(),
         mintingEnabled: Boolean(mintingEnabled),
         guardian,
         owner: tokenOwner,

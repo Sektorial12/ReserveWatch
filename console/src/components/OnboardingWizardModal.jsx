@@ -17,9 +17,12 @@ const emptyProject = {
   symbol: "",
   chainSelectorName: "ethereum-testnet-sepolia",
   rpcUrl: "",
+  supplyChainSelectorName: "",
+  supplyRpcUrl: "",
   explorerBaseUrl: "https://sepolia.etherscan.io",
   receiverAddress: "",
   liabilityTokenAddress: "",
+  supplyLiabilityTokenAddress: "",
   expectedForwarderAddress: "",
   maxReserveAgeS: "",
   maxReserveMismatchRatio: "",
@@ -315,11 +318,18 @@ const buildActiveExport = ({ project, connectors, policy }) => {
     maxReserveMismatchRatio,
   }
 
+  const supplyChainSelectorName = String(project?.supplyChainSelectorName || "").trim()
+  const supplyLiabilityTokenAddress = String(project?.supplyLiabilityTokenAddress || "").trim()
+  const attestationChainSelectorName = String(project?.chainSelectorName || "").trim()
+
   const workflowConfig = {
     schedule: "*/300 * * * * *",
     chainSelectorName: project.chainSelectorName,
+    supplyChainSelectorName: supplyChainSelectorName || undefined,
+    attestationChainSelectorName: supplyChainSelectorName ? attestationChainSelectorName : undefined,
     receiverAddress: project.receiverAddress,
     liabilityTokenAddress: project.liabilityTokenAddress,
+    supplyLiabilityTokenAddress: supplyLiabilityTokenAddress || undefined,
     reserveUrlPrimary: primary?.url ? String(primary.url) : "<set-me>",
     reserveUrlSecondary: secondary?.url ? String(secondary.url) : "<set-me>",
     reserveExpectedSignerAddress: expectedSigner || undefined,
@@ -411,7 +421,16 @@ export default function OnboardingWizardModal({
   useEffect(() => {
     setProjectValidateResult(null)
     setOnchainSnapshot(null)
-  }, [projectForm.chainSelectorName, projectForm.rpcUrl, projectForm.receiverAddress, projectForm.liabilityTokenAddress, projectForm.expectedForwarderAddress])
+  }, [
+    projectForm.chainSelectorName,
+    projectForm.rpcUrl,
+    projectForm.supplyChainSelectorName,
+    projectForm.supplyRpcUrl,
+    projectForm.receiverAddress,
+    projectForm.liabilityTokenAddress,
+    projectForm.supplyLiabilityTokenAddress,
+    projectForm.expectedForwarderAddress,
+  ])
 
   useEffect(() => {
     setTestResult({ primary: null, secondary: null })
@@ -495,9 +514,12 @@ export default function OnboardingWizardModal({
       symbol: String(projectForm.symbol || "").trim(),
       chainSelectorName: String(projectForm.chainSelectorName || "").trim(),
       rpcUrl: String(projectForm.rpcUrl || "").trim(),
+      supplyChainSelectorName: String(projectForm.supplyChainSelectorName || "").trim(),
+      supplyRpcUrl: String(projectForm.supplyRpcUrl || "").trim(),
       explorerBaseUrl: String(projectForm.explorerBaseUrl || "").trim(),
       receiverAddress: String(projectForm.receiverAddress || "").trim(),
       liabilityTokenAddress: String(projectForm.liabilityTokenAddress || "").trim(),
+      supplyLiabilityTokenAddress: String(projectForm.supplyLiabilityTokenAddress || "").trim(),
       expectedForwarderAddress: String(projectForm.expectedForwarderAddress || "").trim(),
       maxReserveAgeS: asText(projectForm.maxReserveAgeS).trim(),
       maxReserveMismatchRatio: asText(projectForm.maxReserveMismatchRatio).trim(),
@@ -533,6 +555,24 @@ export default function OnboardingWizardModal({
     if (!String(projectForm.liabilityTokenAddress || "").trim()) return "Liability token address is required"
     if (!String(projectForm.rpcUrl || "").trim()) return "RPC URL is required"
     if (!String(projectForm.explorerBaseUrl || "").trim()) return "Explorer base URL is required"
+
+    const supplyChainSelectorName = String(projectForm.supplyChainSelectorName || "").trim()
+    const supplyRpcUrl = String(projectForm.supplyRpcUrl || "").trim()
+    const supplyLiabilityTokenAddress = String(projectForm.supplyLiabilityTokenAddress || "").trim()
+
+    if (supplyLiabilityTokenAddress && !isAddress(supplyLiabilityTokenAddress)) {
+      return "Supply liability token address is invalid"
+    }
+
+    const attestationChainSelectorName = String(projectForm.chainSelectorName || "").trim()
+    const supplyDiffers =
+      supplyChainSelectorName &&
+      attestationChainSelectorName &&
+      supplyChainSelectorName.toLowerCase() !== attestationChainSelectorName.toLowerCase()
+
+    if (supplyDiffers && !supplyRpcUrl) {
+      return "Supply RPC URL is required when supply chain differs"
+    }
 
     const conflictLive = (serverProjects || []).some((p) => normalizeId(p?.id) === id)
     if (conflictLive) return "That project ID already exists as a live project"
@@ -605,9 +645,12 @@ export default function OnboardingWizardModal({
       symbol: String(projectForm.symbol || "").trim(),
       chainSelectorName: String(projectForm.chainSelectorName || "").trim(),
       rpcUrl: String(projectForm.rpcUrl || "").trim(),
+      supplyChainSelectorName: String(projectForm.supplyChainSelectorName || "").trim(),
+      supplyRpcUrl: String(projectForm.supplyRpcUrl || "").trim(),
       explorerBaseUrl: String(projectForm.explorerBaseUrl || "").trim(),
       receiverAddress: String(projectForm.receiverAddress || "").trim(),
       liabilityTokenAddress: String(projectForm.liabilityTokenAddress || "").trim(),
+      supplyLiabilityTokenAddress: String(projectForm.supplyLiabilityTokenAddress || "").trim(),
       expectedForwarderAddress: String(projectForm.expectedForwarderAddress || "").trim(),
       maxReserveAgeS: asText(projectForm.maxReserveAgeS).trim(),
       maxReserveMismatchRatio: asText(projectForm.maxReserveMismatchRatio).trim(),
@@ -663,20 +706,32 @@ export default function OnboardingWizardModal({
   const validateProjectOnchain = async () => {
     const rpcUrl = String(projectForm.rpcUrl || "").trim()
     const chain = resolveChain(projectForm.chainSelectorName)
+    const supplyRpcUrl = String(projectForm.supplyRpcUrl || "").trim() || rpcUrl
+    const supplyChain = resolveChain(projectForm.supplyChainSelectorName || projectForm.chainSelectorName)
     const receiverAddress = String(projectForm.receiverAddress || "").trim()
     const liabilityTokenAddress = String(projectForm.liabilityTokenAddress || "").trim()
+    const supplyLiabilityTokenAddress = String(projectForm.supplyLiabilityTokenAddress || "").trim() || liabilityTokenAddress
     const expectedForwarder = String(projectForm.expectedForwarderAddress || "").trim()
 
     if (!rpcUrl) throw new Error("RPC URL is required")
     if (!receiverAddress || !isAddress(receiverAddress)) throw new Error("Receiver address is invalid")
     if (!liabilityTokenAddress || !isAddress(liabilityTokenAddress)) throw new Error("Liability token address is invalid")
+    if (supplyLiabilityTokenAddress && !isAddress(supplyLiabilityTokenAddress)) throw new Error("Supply token address is invalid")
 
     const client = createPublicClient({
       chain,
       transport: http(rpcUrl, { timeout: 15_000 }),
     })
 
-    const [blockNumber, receiverState, tokenState] = await Promise.all([
+    const supplyClient =
+      supplyRpcUrl === rpcUrl && supplyChain?.id === chain?.id
+        ? client
+        : createPublicClient({
+            chain: supplyChain,
+            transport: http(supplyRpcUrl, { timeout: 15_000 }),
+          })
+
+    const [blockNumber, receiverState, tokenEnforcementState, supplyTotalSupply] = await Promise.all([
       client.getBlockNumber(),
       Promise.all([
         client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "lastCoverageBps" }),
@@ -686,13 +741,13 @@ export default function OnboardingWizardModal({
         client.readContract({ address: receiverAddress, abi: receiverAbi, functionName: "getForwarderAddress" }),
       ]),
       Promise.all([
-        client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "totalSupply" }),
         client.readContract({ address: liabilityTokenAddress, abi: tokenAbi, functionName: "mintingEnabled" }),
       ]),
+      supplyClient.readContract({ address: supplyLiabilityTokenAddress, abi: tokenAbi, functionName: "totalSupply" }),
     ])
 
     const [lastCoverageBps, minCoverageBps, mintingPaused, receiverOwner, forwarderAddress] = receiverState
-    const [totalSupply, mintingEnabled] = tokenState
+    const [mintingEnabled] = tokenEnforcementState
 
     const forwarderSet = Boolean(forwarderAddress) && normalizeAddress(forwarderAddress) !== ZERO_ADDRESS
     const hookWired = forwarderSet
@@ -704,6 +759,12 @@ export default function OnboardingWizardModal({
       blockNumber: blockNumber.toString(),
       receiverAddress: normalizeAddress(receiverAddress),
       liabilityTokenAddress: normalizeAddress(liabilityTokenAddress),
+      supplyChainSelectorName: String(projectForm.supplyChainSelectorName || "").trim() || null,
+      supplyRpcUrl: supplyRpcUrl === rpcUrl ? null : supplyRpcUrl,
+      supplyLiabilityTokenAddress:
+        normalizeAddress(supplyLiabilityTokenAddress) === normalizeAddress(liabilityTokenAddress)
+          ? null
+          : normalizeAddress(supplyLiabilityTokenAddress),
       error: "",
       receiver: {
         lastCoverageBps: lastCoverageBps.toString(),
@@ -713,7 +774,7 @@ export default function OnboardingWizardModal({
         forwarderAddress,
       },
       token: {
-        totalSupply: totalSupply.toString(),
+        totalSupply: supplyTotalSupply.toString(),
         mintingEnabled: Boolean(mintingEnabled),
       },
       enforcement: {
@@ -962,7 +1023,7 @@ export default function OnboardingWizardModal({
                 </label>
 
                 <label className="field">
-                  <span className="field-label">Chain selector</span>
+                  <span className="field-label">Attestation chain selector</span>
                   <input
                     className="text-input"
                     value={projectForm.chainSelectorName}
@@ -972,12 +1033,32 @@ export default function OnboardingWizardModal({
                 </label>
 
                 <label className="field span-2">
-                  <span className="field-label">RPC URL</span>
+                  <span className="field-label">Attestation RPC URL</span>
                   <input
                     className="text-input"
                     value={projectForm.rpcUrl}
                     onChange={(e) => setProjectForm((s) => ({ ...s, rpcUrl: e.target.value }))}
                     placeholder="https://..."
+                  />
+                </label>
+
+                <label className="field">
+                  <span className="field-label">Supply chain selector (optional)</span>
+                  <input
+                    className="text-input"
+                    value={projectForm.supplyChainSelectorName}
+                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyChainSelectorName: e.target.value }))}
+                    placeholder="leave blank to use attestation chain"
+                  />
+                </label>
+
+                <label className="field span-2">
+                  <span className="field-label">Supply RPC URL (optional)</span>
+                  <input
+                    className="text-input"
+                    value={projectForm.supplyRpcUrl}
+                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyRpcUrl: e.target.value }))}
+                    placeholder="leave blank to use attestation RPC"
                   />
                 </label>
 
@@ -1008,6 +1089,16 @@ export default function OnboardingWizardModal({
                     value={projectForm.liabilityTokenAddress}
                     onChange={(e) => setProjectForm((s) => ({ ...s, liabilityTokenAddress: e.target.value }))}
                     placeholder="0x..."
+                  />
+                </label>
+
+                <label className="field span-2">
+                  <span className="field-label">Supply token address (optional)</span>
+                  <input
+                    className="text-input"
+                    value={projectForm.supplyLiabilityTokenAddress}
+                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyLiabilityTokenAddress: e.target.value }))}
+                    placeholder="leave blank to use liability token"
                   />
                 </label>
 

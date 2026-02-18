@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from "react"
 
+import { isAddress } from "viem"
+
 const emptyDraft = {
   id: "",
   name: "",
   symbol: "",
   chainSelectorName: "ethereum-testnet-sepolia",
   rpcUrl: "",
+  supplyChainSelectorName: "",
+  supplyRpcUrl: "",
   explorerBaseUrl: "https://sepolia.etherscan.io",
   receiverAddress: "",
   liabilityTokenAddress: "",
+  supplyLiabilityTokenAddress: "",
   expectedForwarderAddress: "",
   maxReserveAgeS: "",
   maxReserveMismatchRatio: "",
@@ -108,6 +113,24 @@ export default function ProjectsModal({
     if (!String(form.rpcUrl || "").trim()) return "RPC URL is required"
     if (!String(form.explorerBaseUrl || "").trim()) return "Explorer base URL is required"
 
+    const supplyChainSelectorName = String(form.supplyChainSelectorName || "").trim()
+    const supplyRpcUrl = String(form.supplyRpcUrl || "").trim()
+    const supplyLiabilityTokenAddress = String(form.supplyLiabilityTokenAddress || "").trim()
+
+    if (supplyLiabilityTokenAddress && !isAddress(supplyLiabilityTokenAddress)) {
+      return "Supply liability token address is invalid"
+    }
+
+    const attestationChainSelectorName = String(form.chainSelectorName || "").trim()
+    const supplyDiffers =
+      supplyChainSelectorName &&
+      attestationChainSelectorName &&
+      supplyChainSelectorName.toLowerCase() !== attestationChainSelectorName.toLowerCase()
+
+    if (supplyDiffers && !supplyRpcUrl) {
+      return "Supply RPC URL is required when supply chain differs"
+    }
+
     const conflictLive = serverProjects.some((p) => normalizeId(p.id) === id)
     if (conflictLive) return "That project ID already exists as a live project"
 
@@ -132,9 +155,12 @@ export default function ProjectsModal({
       symbol: String(form.symbol || "").trim(),
       chainSelectorName: String(form.chainSelectorName || "").trim(),
       rpcUrl: String(form.rpcUrl || "").trim(),
+      supplyChainSelectorName: String(form.supplyChainSelectorName || "").trim(),
+      supplyRpcUrl: String(form.supplyRpcUrl || "").trim(),
       explorerBaseUrl: String(form.explorerBaseUrl || "").trim(),
       receiverAddress: String(form.receiverAddress || "").trim(),
       liabilityTokenAddress: String(form.liabilityTokenAddress || "").trim(),
+      supplyLiabilityTokenAddress: String(form.supplyLiabilityTokenAddress || "").trim(),
       expectedForwarderAddress: String(form.expectedForwarderAddress || "").trim(),
       maxReserveAgeS: asText(form.maxReserveAgeS).trim(),
       maxReserveMismatchRatio: asText(form.maxReserveMismatchRatio).trim(),
@@ -219,11 +245,18 @@ export default function ProjectsModal({
       maxReserveMismatchRatio,
     }
 
+    const supplyChainSelectorName = String(p?.supplyChainSelectorName || "").trim()
+    const supplyLiabilityTokenAddress = String(p?.supplyLiabilityTokenAddress || "").trim()
+    const attestationChainSelectorName = String(p?.chainSelectorName || "").trim()
+
     const workflowConfig = {
       schedule: "*/300 * * * * *",
       chainSelectorName: p.chainSelectorName,
+      supplyChainSelectorName: supplyChainSelectorName || undefined,
+      attestationChainSelectorName: supplyChainSelectorName ? attestationChainSelectorName : undefined,
       receiverAddress: p.receiverAddress,
       liabilityTokenAddress: p.liabilityTokenAddress,
+      supplyLiabilityTokenAddress: supplyLiabilityTokenAddress || undefined,
       reserveUrlPrimary: primary?.url ? String(primary.url) : "<set-me>",
       reserveUrlSecondary: secondary?.url ? String(secondary.url) : "<set-me>",
       reserveExpectedSignerAddress: expectedSigner || undefined,
@@ -465,7 +498,7 @@ export default function ProjectsModal({
                 </label>
 
                 <label className="field">
-                  <span className="field-label">Chain selector</span>
+                  <span className="field-label">Attestation chain selector</span>
                   <input
                     className="text-input"
                     value={form.chainSelectorName}
@@ -475,12 +508,32 @@ export default function ProjectsModal({
                 </label>
 
                 <label className="field span-2">
-                  <span className="field-label">RPC URL</span>
+                  <span className="field-label">Attestation RPC URL</span>
                   <input
                     className="text-input"
                     value={form.rpcUrl}
                     onChange={(e) => setForm((s) => ({ ...s, rpcUrl: e.target.value }))}
                     placeholder="https://..."
+                  />
+                </label>
+
+                <label className="field">
+                  <span className="field-label">Supply chain selector (optional)</span>
+                  <input
+                    className="text-input"
+                    value={form.supplyChainSelectorName}
+                    onChange={(e) => setForm((s) => ({ ...s, supplyChainSelectorName: e.target.value }))}
+                    placeholder="leave blank to use attestation chain"
+                  />
+                </label>
+
+                <label className="field span-2">
+                  <span className="field-label">Supply RPC URL (optional)</span>
+                  <input
+                    className="text-input"
+                    value={form.supplyRpcUrl}
+                    onChange={(e) => setForm((s) => ({ ...s, supplyRpcUrl: e.target.value }))}
+                    placeholder="leave blank to use attestation RPC"
                   />
                 </label>
 
@@ -511,6 +564,16 @@ export default function ProjectsModal({
                     value={form.liabilityTokenAddress}
                     onChange={(e) => setForm((s) => ({ ...s, liabilityTokenAddress: e.target.value }))}
                     placeholder="0x..."
+                  />
+                </label>
+
+                <label className="field span-2">
+                  <span className="field-label">Supply token address (optional)</span>
+                  <input
+                    className="text-input"
+                    value={form.supplyLiabilityTokenAddress}
+                    onChange={(e) => setForm((s) => ({ ...s, supplyLiabilityTokenAddress: e.target.value }))}
+                    placeholder="leave blank to use liability token"
                   />
                 </label>
 
