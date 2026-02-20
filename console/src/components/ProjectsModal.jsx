@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { isAddress } from "viem"
 
@@ -20,6 +20,16 @@ const emptyDraft = {
 }
 
 const normalizeId = (id) => String(id || "").trim()
+
+const normalizeConnectorId = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+}
+
+const ensureArray = (value) => (Array.isArray(value) ? value : [])
 
 const asText = (value) => {
   if (value === null || value === undefined) return ""
@@ -44,6 +54,74 @@ const downloadText = (filename, content, contentType = "application/json") => {
   }
 }
 
+const normalizeDraftProject = (project) => {
+  if (!project || typeof project !== "object") return null
+  const id = normalizeId(project.id)
+  if (!id) return null
+  return { ...emptyDraft, ...project, id }
+}
+
+const normalizeDraftConnector = (connector) => {
+  if (!connector || typeof connector !== "object") return null
+  const id = normalizeConnectorId(connector.id)
+  const projectId = normalizeId(connector.projectId)
+  if (!id || !projectId) return null
+  return { ...connector, id, projectId }
+}
+
+const normalizeDraftPolicy = (policy) => {
+  if (!policy || typeof policy !== "object") return null
+  const projectId = normalizeId(policy.projectId)
+  if (!projectId) return null
+  return { ...policy, projectId }
+}
+
+const mergeByKey = (existing, incoming, keyFn) => {
+  const map = new Map()
+  ensureArray(existing).forEach((item) => {
+    if (!item) return
+    const key = keyFn(item)
+    if (key) map.set(key, item)
+  })
+  ensureArray(incoming).forEach((item) => {
+    if (!item) return
+    const key = keyFn(item)
+    if (key) map.set(key, item)
+  })
+  return Array.from(map.values())
+}
+
+const resolveImportPayload = (payload) => {
+  if (!payload || typeof payload !== "object") return null
+
+  if (payload.inputs && typeof payload.inputs === "object") {
+    const inputs = payload.inputs
+    const project = inputs.draftProject || null
+    const connectors = inputs.draftConnectors || []
+    const policy = inputs.draftPolicy || null
+    return {
+      projects: project ? [project] : [],
+      connectors,
+      policies: policy ? [policy] : [],
+      selectedProjectId: project?.id || payload.projectId || "",
+    }
+  }
+
+  const draftsRoot = payload.drafts && typeof payload.drafts === "object" ? payload.drafts : payload
+  const projects = draftsRoot.draftProjects ?? draftsRoot.projects ?? null
+  const connectors = draftsRoot.draftConnectors ?? draftsRoot.connectors ?? null
+  const policies = draftsRoot.draftPolicies ?? draftsRoot.policies ?? null
+
+  if (!projects && !connectors && !policies) return null
+
+  return {
+    projects: projects || [],
+    connectors: connectors || [],
+    policies: policies || [],
+    selectedProjectId: draftsRoot.defaultProjectId || payload.defaultProjectId || payload.projectId || "",
+  }
+}
+
 export default function ProjectsModal({
   open,
   onClose,
@@ -51,6 +129,8 @@ export default function ProjectsModal({
   draftProjects,
   draftConnectors,
   draftPolicies,
+  onSaveDraftConnectors,
+  onSaveDraftPolicies,
   onSaveDraftProjects,
   onRenameDraftProjectId,
   activeProjectId,
@@ -61,6 +141,9 @@ export default function ProjectsModal({
   const [editingOriginalId, setEditingOriginalId] = useState(null)
   const [error, setError] = useState("")
   const [copied, setCopied] = useState(false)
+  const [importError, setImportError] = useState("")
+  const [importNotice, setImportNotice] = useState("")
+  const importInputRef = useRef(null)
 
   useEffect(() => {
     if (!open) return
@@ -69,6 +152,8 @@ export default function ProjectsModal({
     setEditingOriginalId(null)
     setError("")
     setCopied(false)
+    setImportError("")
+    setImportNotice("")
   }, [open])
 
   const activeDraft = useMemo(() => {
@@ -301,6 +386,30 @@ export default function ProjectsModal({
     }
   }, [activeDraft, activeProjectId, draftConnectors, draftPolicies])
 
+  const draftExport = useMemo(() => {
+    const projects = ensureArray(draftProjects)
+    const connectors = ensureArray(draftConnectors)
+    const policies = ensureArray(draftPolicies)
+    const activeDraftId =
+      projects.find((p) => normalizeId(p?.id) === normalizeId(activeProjectId))?.id || ""
+    const defaultProjectId = activeDraftId || projects[0]?.id || ""
+
+    const bundle = {
+      generatedAt: new Date().toISOString(),
+      drafts: {
+        defaultProjectId: defaultProjectId || null,
+        draftProjects: projects,
+        draftConnectors: connectors,
+        draftPolicies: policies,
+      },
+    }
+
+    return {
+      bundleJson: jsonStableStringify(bundle),
+      hasDrafts: Boolean(projects.length || connectors.length || policies.length),
+    }
+  }, [activeProjectId, draftProjects, draftConnectors, draftPolicies])
+
   const copy = async (text) => {
     try {
       if (!navigator?.clipboard?.writeText) return
@@ -312,6 +421,78 @@ export default function ProjectsModal({
     }
   }
 
+  const handleImportFile = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) return
+
+    setImportError("")
+    setImportNotice("")
+
+    try {
+      const raw = await file.text()
+      const parsed = JSON.parse(raw)
+      const resolved = resolveImportPayload(parsed)
+      if (!resolved) {
+        throw new Error("Unrecognized bundle format")
+      }
+
+      const normalizedProjects = ensureArray(resolved.projects)
+        .map(normalizeDraftProject)
+        .filter(Boolean)
+      const normalizedConnectors = ensureArray(resolved.connectors)
+        .map(normalizeDraftConnector)
+        .filter(Boolean)
+      const normalizedPolicies = ensureArray(resolved.policies)
+        .map(normalizeDraftPolicy)
+        .filter(Boolean)
+
+      if (!normalizedProjects.length && !normalizedConnectors.length && !normalizedPolicies.length) {
+        throw new Error("No draft records found in bundle")
+      }
+
+      const mergedProjects = mergeByKey(draftProjects, normalizedProjects, (p) => normalizeId(p.id)).sort((a, b) =>
+        a.id.localeCompare(b.id)
+      )
+      const projectIds = new Set(mergedProjects.map((p) => normalizeId(p.id)))
+
+      const mergedConnectors = mergeByKey(
+        draftConnectors,
+        normalizedConnectors,
+        (c) => `${normalizeId(c.projectId)}:${normalizeConnectorId(c.id)}`
+      ).filter((c) => projectIds.has(normalizeId(c.projectId)))
+
+      const mergedPolicies = mergeByKey(draftPolicies, normalizedPolicies, (p) => normalizeId(p.projectId)).filter((p) =>
+        projectIds.has(normalizeId(p.projectId))
+      )
+
+      if (typeof onSaveDraftProjects === "function") onSaveDraftProjects(mergedProjects)
+      if (typeof onSaveDraftConnectors === "function") onSaveDraftConnectors(mergedConnectors)
+      if (typeof onSaveDraftPolicies === "function") onSaveDraftPolicies(mergedPolicies)
+
+      const desiredId = normalizeId(resolved.selectedProjectId)
+      const currentId = normalizeId(activeProjectId)
+      const fallbackId = normalizeId(normalizedProjects[0]?.id || mergedProjects[0]?.id || "")
+      const nextId = projectIds.has(desiredId) ? desiredId : projectIds.has(currentId) ? currentId : fallbackId
+      if (nextId && typeof onSelectProjectId === "function") onSelectProjectId(nextId)
+
+      const parts = []
+      if (normalizedProjects.length) {
+        parts.push(`${normalizedProjects.length} project${normalizedProjects.length === 1 ? "" : "s"}`)
+      }
+      if (normalizedConnectors.length) {
+        parts.push(`${normalizedConnectors.length} connector${normalizedConnectors.length === 1 ? "" : "s"}`)
+      }
+      if (normalizedPolicies.length) {
+        parts.push(`${normalizedPolicies.length} ${normalizedPolicies.length === 1 ? "policy" : "policies"}`)
+      }
+
+      setImportNotice(parts.length ? `Imported ${parts.join(", ")}.` : "Import complete.")
+    } catch (err) {
+      setImportError(String(err?.message || err))
+    }
+  }
+
   if (!open) return null
 
   return (
@@ -320,7 +501,7 @@ export default function ProjectsModal({
         <div className="modal-header">
           <div>
             <h2 className="modal-title">Projects</h2>
-            <p className="modal-subtitle">Create draft projects and export config for deployment</p>
+            <p className="modal-subtitle">Create draft projects, import bundles, and export config for deployment</p>
           </div>
           <button className="btn btn-ghost" onClick={onClose}>
             Close
@@ -377,87 +558,146 @@ export default function ProjectsModal({
               </div>
 
               <div className="modal-pane">
-                <h3 className="pane-title">Export</h3>
+                <h3 className="pane-title">Export & Import</h3>
 
-                {!activeExport ? (
-                  <div className="empty-state">Select a draft project to export its config.</div>
-                ) : (
-                  <div className="export">
-                    <div className="export-section">
-                      <div className="export-header">
-                        <div className="export-title">Server project entry</div>
-                        <button className="btn btn-ghost" onClick={() => void copy(activeExport.serverProjectsJsonEntry)}>
+                <div className="export">
+                  <div className="export-section">
+                    <div className="export-header">
+                      <div className="export-title">Draft bundle (projects + connectors + policy)</div>
+                      <div className="export-actions">
+                        <button
+                          className="btn btn-ghost"
+                          disabled={!draftExport.hasDrafts}
+                          onClick={() => void copy(draftExport.bundleJson)}
+                        >
                           {copied ? "Copied" : "Copy"}
                         </button>
-                      </div>
-                      <pre className="code-block">{activeExport.serverProjectsJsonEntry}</pre>
-                    </div>
-
-                    <div className="export-section">
-                      <div className="export-header">
-                        <div className="export-title">Server projects.json (file)</div>
-                        <div className="export-actions">
-                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.serverProjectsJsonFile)}>
-                            {copied ? "Copied" : "Copy"}
-                          </button>
-                          <button
-                            className="btn btn-primary"
-                            onClick={() => downloadText("projects.json", activeExport.serverProjectsJsonFile)}
-                          >
-                            Download
-                          </button>
-                        </div>
-                      </div>
-                      <pre className="code-block">{activeExport.serverProjectsJsonFile}</pre>
-                    </div>
-
-                    <div className="export-section">
-                      <div className="export-header">
-                        <div className="export-title">Workflow config snippet</div>
-                        <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigSnippet)}>
-                          {copied ? "Copied" : "Copy"}
+                        <button
+                          className="btn btn-primary"
+                          disabled={!draftExport.hasDrafts}
+                          onClick={() => downloadText("reservewatch-drafts.json", draftExport.bundleJson)}
+                        >
+                          Download
                         </button>
                       </div>
-                      <pre className="code-block">{activeExport.workflowConfigSnippet}</pre>
                     </div>
-
-                    <div className="export-section">
-                      <div className="export-header">
-                        <div className="export-title">Workflow config.production.json (file)</div>
-                        <div className="export-actions">
-                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigFile)}>
-                            {copied ? "Copied" : "Copy"}
-                          </button>
-                          <button
-                            className="btn btn-primary"
-                            onClick={() => downloadText("config.production.json", activeExport.workflowConfigFile)}
-                          >
-                            Download
-                          </button>
-                        </div>
-                      </div>
-                      <pre className="code-block">{activeExport.workflowConfigFile}</pre>
-                    </div>
-
-                    <div className="export-section">
-                      <div className="export-header">
-                        <div className="export-title">Export bundle (single JSON)</div>
-                        <div className="export-actions">
-                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.bundleJson)}>
-                            {copied ? "Copied" : "Copy"}
-                          </button>
-                          <button
-                            className="btn btn-primary"
-                            onClick={() => downloadText(`reservewatch-bundle-${normalizeId(activeProjectId) || "draft"}.json`, activeExport.bundleJson)}
-                          >
-                            Download
-                          </button>
-                        </div>
-                      </div>
-                      <pre className="code-block">{activeExport.bundleJson}</pre>
-                    </div>
+                    {draftExport.hasDrafts ? (
+                      <pre className="code-block">{draftExport.bundleJson}</pre>
+                    ) : (
+                      <div className="empty-state">No draft data to export yet.</div>
+                    )}
                   </div>
-                )}
+
+                  <div className="export-section">
+                    <div className="export-header">
+                      <div className="export-title">Import draft bundle</div>
+                      <div className="export-actions">
+                        <input
+                          ref={importInputRef}
+                          className="file-input"
+                          type="file"
+                          accept="application/json,.json"
+                          onChange={handleImportFile}
+                        />
+                        <button className="btn btn-ghost" onClick={() => importInputRef.current?.click()}>
+                          Select JSON
+                        </button>
+                      </div>
+                    </div>
+                    {importError ? (
+                      <div className="form-error">{importError}</div>
+                    ) : importNotice ? (
+                      <div className="form-note">{importNotice}</div>
+                    ) : (
+                      <div className="empty-state">Imports merge by ID and keep existing drafts unless IDs match.</div>
+                    )}
+                  </div>
+
+                  {!activeExport ? (
+                    <div className="empty-state">Select a draft project to export its config.</div>
+                  ) : (
+                    <>
+                      <div className="export-section">
+                        <div className="export-header">
+                          <div className="export-title">Server project entry</div>
+                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.serverProjectsJsonEntry)}>
+                            {copied ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <pre className="code-block">{activeExport.serverProjectsJsonEntry}</pre>
+                      </div>
+
+                      <div className="export-section">
+                        <div className="export-header">
+                          <div className="export-title">Server projects.json (file)</div>
+                          <div className="export-actions">
+                            <button className="btn btn-ghost" onClick={() => void copy(activeExport.serverProjectsJsonFile)}>
+                              {copied ? "Copied" : "Copy"}
+                            </button>
+                            <button
+                              className="btn btn-primary"
+                              onClick={() => downloadText("projects.json", activeExport.serverProjectsJsonFile)}
+                            >
+                              Download
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="code-block">{activeExport.serverProjectsJsonFile}</pre>
+                      </div>
+
+                      <div className="export-section">
+                        <div className="export-header">
+                          <div className="export-title">Workflow config snippet</div>
+                          <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigSnippet)}>
+                            {copied ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <pre className="code-block">{activeExport.workflowConfigSnippet}</pre>
+                      </div>
+
+                      <div className="export-section">
+                        <div className="export-header">
+                          <div className="export-title">Workflow config.production.json (file)</div>
+                          <div className="export-actions">
+                            <button className="btn btn-ghost" onClick={() => void copy(activeExport.workflowConfigFile)}>
+                              {copied ? "Copied" : "Copy"}
+                            </button>
+                            <button
+                              className="btn btn-primary"
+                              onClick={() => downloadText("config.production.json", activeExport.workflowConfigFile)}
+                            >
+                              Download
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="code-block">{activeExport.workflowConfigFile}</pre>
+                      </div>
+
+                      <div className="export-section">
+                        <div className="export-header">
+                          <div className="export-title">Export bundle (single JSON)</div>
+                          <div className="export-actions">
+                            <button className="btn btn-ghost" onClick={() => void copy(activeExport.bundleJson)}>
+                              {copied ? "Copied" : "Copy"}
+                            </button>
+                            <button
+                              className="btn btn-primary"
+                              onClick={() =>
+                                downloadText(
+                                  `reservewatch-bundle-${normalizeId(activeProjectId) || "draft"}.json`,
+                                  activeExport.bundleJson
+                                )
+                              }
+                            >
+                              Download
+                            </button>
+                          </div>
+                        </div>
+                        <pre className="code-block">{activeExport.bundleJson}</pre>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </div>

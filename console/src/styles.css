@@ -1132,6 +1132,10 @@ body {
 .text-input::placeholder {
   color: var(--muted);
 }
+
+.file-input {
+  display: none;
+}
 .span-2 {
   grid-column: span 2;
 }
@@ -1139,11 +1143,22 @@ body {
   margin-top: 12px;
   padding: 12px;
   background: var(--danger-glow);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-md);
+  border: 1px solid rgba(239, 68, 68, 0.4);
   color: var(--danger);
+  border-radius: var(--radius-md);
   font-size: 0.9rem;
 }
+
+.form-note {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--accent-glow);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: var(--accent);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+}
+
 .form-actions {
   margin-top: 14px;
   display: flex;

@@ -1206,6 +1206,8 @@ export default function App() {
         draftProjects={draftProjects}
         draftConnectors={draftConnectors}
         draftPolicies={draftPolicies}
+        onSaveDraftConnectors={saveDraftConnectors}
+        onSaveDraftPolicies={saveDraftPolicies}
         onSaveDraftProjects={saveDraftProjects}
         onRenameDraftProjectId={renameDraftProjectId}
         activeProjectId={projectId}
