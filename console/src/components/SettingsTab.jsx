@@ -595,8 +595,8 @@ export default function SettingsTab({
       ) : (
         <>
           <div className="detail-section">
-            <h3 className="section-title">Draft Policy (Local)</h3>
-            <p className="tab-subtitle">Saved in this browser. Used for export + preview.</p>
+            <h3 className="section-title">Draft Policy</h3>
+            <p className="tab-subtitle">Saved as draft configuration. Used for export + preview.</p>
 
             <div className="form">
               <div className="form-actions" style={{ justifyContent: "flex-start" }}>

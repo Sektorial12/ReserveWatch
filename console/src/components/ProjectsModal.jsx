@@ -216,9 +216,6 @@ export default function ProjectsModal({
       return "Supply RPC URL is required when supply chain differs"
     }
 
-    const conflictLive = serverProjects.some((p) => normalizeId(p.id) === id)
-    if (conflictLive) return "That project ID already exists as a live project"
-
     const conflictDraft = draftProjects.some((p) => normalizeId(p.id) === id)
     const isEditing = mode === "edit" && normalizeId(editingOriginalId) === id
     if (conflictDraft && !isEditing) return "That project ID already exists as a draft"

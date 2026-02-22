@@ -244,10 +244,10 @@ export default function ConnectorsTab({
           <div className="empty-row">Select a project to manage connectors.</div>
         </div>
       ) : (
-        <>
+        <> 
           <div className="detail-section">
-            <h3 className="section-title">Configured Connectors (Local)</h3>
-            <p className="tab-subtitle">These connectors are saved locally and used for export.</p>
+            <h3 className="section-title">Draft Connectors</h3>
+            <p className="tab-subtitle">These connectors are saved as draft configuration and used for export.</p>
 
             <div className="modal-split">
               <div className="modal-pane">

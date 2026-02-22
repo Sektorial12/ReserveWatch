@@ -29,17 +29,30 @@ const TABS = [
   { id: "audit", label: "Audit" },
 ]
 
+const ADMIN_KEY = String(import.meta.env?.VITE_RESERVEWATCH_ADMIN_KEY || "").trim()
+
 const fetchJson = async (url, init = {}) => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), init.timeoutMs || 12000)
 
   try {
+    const method = String(init.method || "GET").toUpperCase()
+    const headers = {
+      "content-type": "application/json",
+      ...(init.headers || {}),
+    }
+
+    if ((method === "POST" || method === "PUT" || method === "DELETE") && ADMIN_KEY) {
+      const hasAuth = Object.keys(headers).some((key) => {
+        const k = String(key || "").toLowerCase()
+        return k === "x-admin-key" || k === "authorization"
+      })
+      if (!hasAuth) headers["x-admin-key"] = ADMIN_KEY
+    }
+
     const response = await fetch(url, {
-      method: init.method || "GET",
-      headers: {
-        "content-type": "application/json",
-        ...(init.headers || {}),
-      },
+      method,
+      headers,
       body: init.body ? JSON.stringify(init.body) : undefined,
       signal: controller.signal,
     })
@@ -60,10 +73,19 @@ const fromUrlProject = () => {
   return u.searchParams.get("project")
 }
 
-const writeUrlProject = (projectId) => {
+const fromUrlDraft = () => {
+  const u = new URL(window.location.href)
+  const raw = u.searchParams.get("draft")
+  const s = String(raw || "").trim().toLowerCase()
+  return s === "1" || s === "true" || s === "yes" || s === "on"
+}
+
+const writeUrlProject = (projectId, { draft = false } = {}) => {
   const u = new URL(window.location.href)
   if (projectId) u.searchParams.set("project", projectId)
   else u.searchParams.delete("project")
+  if (draft) u.searchParams.set("draft", "1")
+  else u.searchParams.delete("draft")
   window.history.replaceState({}, "", u.toString())
 }
 
@@ -267,9 +289,9 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [polling, setPolling] = useState(false)
   const [projects, setProjects] = useState([])
-  const [draftProjects, setDraftProjects] = useState(() => readDraftProjects())
-  const [draftConnectors, setDraftConnectors] = useState(() => readDraftConnectors())
-  const [draftPolicies, setDraftPolicies] = useState(() => readDraftPolicies())
+  const [draftProjects, setDraftProjects] = useState([])
+  const [draftConnectors, setDraftConnectors] = useState([])
+  const [draftPolicies, setDraftPolicies] = useState([])
   const [alertRouting, setAlertRouting] = useState(() => {
     try {
       const raw = window.localStorage.getItem(ALERT_ROUTING_KEY)
@@ -303,6 +325,7 @@ export default function App() {
   const [projectsModalOpen, setProjectsModalOpen] = useState(false)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [projectId, setProjectId] = useState(null)
+  const [activeEnv, setActiveEnv] = useState("live")
   const [liveStatus, setLiveStatus] = useState(null)
   const [history, setHistory] = useState([])
   const [historyMeta, setHistoryMeta] = useState(null)
@@ -322,14 +345,30 @@ export default function App() {
   const pollRef = useRef(null)
   const busyRef = useRef(false)
   const pendingActionRef = useRef(null)
+  const projectsRef = useRef(projects)
   const draftProjectsRef = useRef(draftProjects)
+  const draftConnectorsRef = useRef(draftConnectors)
+  const draftPoliciesRef = useRef(draftPolicies)
+  const pendingProjectRenamesRef = useRef([])
   const statusCacheRef = useRef(new Map())
   const historyCacheRef = useRef(new Map())
   const historyFetchedAtRef = useRef(new Map())
 
   useEffect(() => {
+    projectsRef.current = projects
+  }, [projects])
+
+  useEffect(() => {
     draftProjectsRef.current = draftProjects
   }, [draftProjects])
+
+  useEffect(() => {
+    draftConnectorsRef.current = draftConnectors
+  }, [draftConnectors])
+
+  useEffect(() => {
+    draftPoliciesRef.current = draftPolicies
+  }, [draftPolicies])
 
   const selectedDraft = useMemo(() => {
     if (!projectId) return null
@@ -341,10 +380,20 @@ export default function App() {
     return projects.find((p) => p.id === projectId) || null
   }, [projects, projectId])
 
-  const isLiveProject = useMemo(() => {
+  const hasLiveConfig = useMemo(() => {
     if (!projectId) return false
     return projects.some((p) => p.id === projectId)
   }, [projects, projectId])
+
+  const isLiveProject = useMemo(() => {
+    if (!projectId) return false
+    return activeEnv === "live" && hasLiveConfig
+  }, [activeEnv, hasLiveConfig, projectId])
+
+  const draftOnlyProjects = useMemo(() => {
+    const liveIds = new Set((projects || []).map((p) => p?.id).filter(Boolean))
+    return (draftProjects || []).filter((p) => p && !liveIds.has(p.id))
+  }, [projects, draftProjects])
 
   const draftConnectorsForProject = useMemo(() => {
     if (!projectId) return []
@@ -413,29 +462,47 @@ export default function App() {
 
   const loadProjects = useCallback(async () => {
     const urlProject = fromUrlProject()
-    const draftIds = (draftProjectsRef.current || []).map((p) => p.id)
+    const urlDraft = fromUrlDraft()
+    const draftUrl = (p) => `${p}${p.includes("?") ? "&" : "?"}draft=1`
 
-    try {
-      const data = await fetchJson("/api/projects", { timeoutMs: 8000 })
-      const allProjects = Array.isArray(data?.projects) ? data.projects : []
+    const [liveProjectsRes, draftProjectsRes, draftConnectorsRes, draftPoliciesRes] = await Promise.allSettled([
+      fetchJson("/api/projects", { timeoutMs: 8000 }),
+      fetchJson(draftUrl("/api/projects"), { timeoutMs: 8000 }),
+      fetchJson(draftUrl("/api/connectors"), { timeoutMs: 8000 }),
+      fetchJson(draftUrl("/api/policies"), { timeoutMs: 8000 }),
+    ])
 
-      const allIds = new Set([...allProjects.map((p) => p.id), ...draftIds].filter(Boolean))
-      const defaultId = data?.defaultProjectId || allProjects[0]?.id || draftIds[0] || null
-      const selected = urlProject && allIds.has(urlProject) ? urlProject : defaultId
+    const liveProjects =
+      liveProjectsRes.status === "fulfilled" && Array.isArray(liveProjectsRes.value?.projects) ? liveProjectsRes.value.projects : []
+    const liveDefaultProjectId = liveProjectsRes.status === "fulfilled" ? liveProjectsRes.value?.defaultProjectId || null : null
 
-      setProjects(allProjects)
-      setProjectId(selected)
-      if (selected) writeUrlProject(selected)
-      setLiveError("")
-    } catch {
-      const allIds = new Set(draftIds.filter(Boolean))
-      const selected = urlProject && allIds.has(urlProject) ? urlProject : draftIds[0] || null
+    const drafts =
+      draftProjectsRes.status === "fulfilled" && Array.isArray(draftProjectsRes.value?.projects) ? draftProjectsRes.value.projects : []
+    const draftDefaultProjectId = draftProjectsRes.status === "fulfilled" ? draftProjectsRes.value?.defaultProjectId || null : null
 
-      setProjects([])
-      setProjectId(selected)
-      if (selected) writeUrlProject(selected)
-      setLiveError("")
-    }
+    const draftConnectors =
+      draftConnectorsRes.status === "fulfilled" && Array.isArray(draftConnectorsRes.value?.connectors)
+        ? draftConnectorsRes.value.connectors
+        : []
+    const draftPolicies =
+      draftPoliciesRes.status === "fulfilled" && Array.isArray(draftPoliciesRes.value?.policies) ? draftPoliciesRes.value.policies : []
+
+    const allIds = new Set([...liveProjects.map((p) => p?.id), ...drafts.map((p) => p?.id)].filter(Boolean))
+    const defaultId = liveDefaultProjectId || liveProjects[0]?.id || draftDefaultProjectId || drafts[0]?.id || null
+    const selected = urlProject && allIds.has(urlProject) ? urlProject : defaultId
+
+    const selectedHasLive = selected ? liveProjects.some((p) => p && p.id === selected) : false
+    const nextEnv = urlDraft || (!selectedHasLive && selected) ? "draft" : "live"
+
+    projectsRef.current = liveProjects
+    setProjects(liveProjects)
+    setDraftProjects(drafts)
+    setDraftConnectors(draftConnectors)
+    setDraftPolicies(draftPolicies)
+    setProjectId(selected)
+    setActiveEnv(nextEnv)
+    if (selected) writeUrlProject(selected, { draft: nextEnv === "draft" })
+    setLiveError("")
   }, [])
 
   const loadPublicStatus = useCallback(async () => {
@@ -464,7 +531,8 @@ export default function App() {
   const loadData = useCallback(
     async (overrideProjectId = null, options = {}) => {
       const activeProjectId = overrideProjectId || projectId
-      const live = activeProjectId ? projects.some((p) => p.id === activeProjectId) : false
+      const live =
+        activeEnv === "live" && activeProjectId ? (projectsRef.current || []).some((p) => p && p.id === activeProjectId) : false
 
       if (!activeProjectId || !live) {
         setLiveStatus(null)
@@ -549,7 +617,7 @@ export default function App() {
         historyFetchedAtRef.current.set(activeProjectId, Date.now())
       }
     },
-    [projectId, projects, activeTab]
+    [projectId, activeTab, activeEnv]
   )
 
   const withAction = useCallback(
@@ -609,14 +677,10 @@ export default function App() {
   useEffect(() => {
     if (!projectId) return
 
-    if (!isLiveProject) {
-      writeUrlProject(projectId)
-      return
-    }
+    writeUrlProject(projectId, { draft: !isLiveProject })
 
-    void withAction(async () => {
-      writeUrlProject(projectId)
-    }, projectId)
+    if (!isLiveProject) return
+    void withAction(async () => {}, projectId)
   }, [projectId, isLiveProject, withAction])
 
   useEffect(() => {
@@ -667,35 +731,162 @@ export default function App() {
     [projectId, isLiveProject]
   )
 
-  const saveDraftProjects = useCallback((next) => {
-    setDraftProjects(next)
-    writeDraftProjects(next)
+  const saveDraftProjects = useCallback(
+    (next) => {
+      const nextArr = Array.isArray(next) ? next.filter(Boolean) : []
+      const prevSnapshot = Array.isArray(draftProjectsRef.current) ? draftProjectsRef.current.filter(Boolean) : []
+      setDraftProjects(nextArr)
 
-    const keep = new Set((next || []).map((p) => p?.id).filter(Boolean))
-    setDraftConnectors((prev) => {
-      const arr = Array.isArray(prev) ? prev : []
-      const filtered = arr.filter((c) => c && keep.has(c.projectId))
-      writeDraftConnectors(filtered)
-      return filtered
-    })
+      const keep = new Set(nextArr.map((p) => p?.id).filter(Boolean))
+      setDraftConnectors((prev) => {
+        const arr = Array.isArray(prev) ? prev : []
+        return arr.filter((c) => c && keep.has(c.projectId))
+      })
+      setDraftPolicies((prev) => {
+        const arr = Array.isArray(prev) ? prev : []
+        return arr.filter((p) => p && keep.has(p.projectId))
+      })
 
-    setDraftPolicies((prev) => {
-      const arr = Array.isArray(prev) ? prev : []
-      const filtered = arr.filter((p) => p && keep.has(p.projectId))
-      writeDraftPolicies(filtered)
-      return filtered
-    })
-  }, [])
+      void withAction(async () => {
+        const cleanId = (value) => String(value || "").trim()
+        const prevArr = prevSnapshot
+        const prevById = new Map(prevArr.map((p) => [cleanId(p?.id), p]).filter(([id]) => id))
+        const nextById = new Map(nextArr.map((p) => [cleanId(p?.id), p]).filter(([id]) => id))
 
-  const saveDraftConnectors = useCallback((next) => {
-    setDraftConnectors(next)
-    writeDraftConnectors(next)
-  }, [])
+        const deletedIds = new Set(Array.from(prevById.keys()).filter((id) => !nextById.has(id)))
+        const addedIds = new Set(Array.from(nextById.keys()).filter((id) => !prevById.has(id)))
 
-  const saveDraftPolicies = useCallback((next) => {
-    setDraftPolicies(next)
-    writeDraftPolicies(next)
-  }, [])
+        const renames = Array.isArray(pendingProjectRenamesRef.current) ? pendingProjectRenamesRef.current : []
+        pendingProjectRenamesRef.current = []
+
+        for (const r of renames) {
+          const from = cleanId(r?.from)
+          const to = cleanId(r?.to)
+          const payload = to ? nextById.get(to) : null
+          if (!from || !to || !payload) continue
+          await fetchJson("/api/projects?draft=1", {
+            method: "PUT",
+            body: { ...payload, previousId: from },
+            timeoutMs: 12000,
+          })
+          deletedIds.delete(from)
+          addedIds.delete(to)
+          prevById.delete(from)
+          prevById.set(to, payload)
+        }
+
+        for (const [id, payload] of nextById.entries()) {
+          if (!prevById.has(id)) continue
+          const before = prevById.get(id)
+          if (JSON.stringify(before) === JSON.stringify(payload)) continue
+          await fetchJson("/api/projects?draft=1", { method: "PUT", body: payload, timeoutMs: 12000 })
+        }
+
+        for (const id of addedIds) {
+          const payload = nextById.get(id)
+          if (!payload) continue
+          await fetchJson("/api/projects?draft=1", { method: "POST", body: payload, timeoutMs: 12000 })
+        }
+
+        for (const id of deletedIds) {
+          await fetchJson("/api/projects?draft=1", { method: "DELETE", body: { id }, timeoutMs: 12000 })
+        }
+
+        await loadProjects()
+      })
+    },
+    [withAction, loadProjects]
+  )
+
+  const saveDraftConnectors = useCallback(
+    (next) => {
+      const nextArr = Array.isArray(next) ? next.filter(Boolean) : []
+      const prevSnapshot = Array.isArray(draftConnectorsRef.current) ? draftConnectorsRef.current.filter(Boolean) : []
+      setDraftConnectors(nextArr)
+
+      const toKey = (c) => {
+        if (!c) return ""
+        const pid = String(c.projectId || "").trim()
+        const id = normalizeConnectorId(c.id)
+        if (!pid || !id) return ""
+        return `${pid}:${id}`
+      }
+
+      void withAction(async () => {
+        const prevArr = prevSnapshot
+        const prevByKey = new Map(prevArr.map((c) => [toKey(c), c]).filter(([k]) => k))
+        const nextByKey = new Map(nextArr.map((c) => [toKey(c), c]).filter(([k]) => k))
+
+        const deleted = Array.from(prevByKey.keys()).filter((k) => !nextByKey.has(k))
+        const added = Array.from(nextByKey.keys()).filter((k) => !prevByKey.has(k))
+
+        for (const k of deleted) {
+          const c = prevByKey.get(k)
+          if (!c) continue
+          await fetchJson("/api/connectors?draft=1", {
+            method: "DELETE",
+            body: { projectId: c.projectId, id: normalizeConnectorId(c.id) },
+            timeoutMs: 12000,
+          })
+        }
+
+        for (const [k, payload] of nextByKey.entries()) {
+          if (!prevByKey.has(k)) continue
+          const before = prevByKey.get(k)
+          if (JSON.stringify(before) === JSON.stringify(payload)) continue
+          await fetchJson("/api/connectors?draft=1", { method: "PUT", body: payload, timeoutMs: 12000 })
+        }
+
+        for (const k of added) {
+          const payload = nextByKey.get(k)
+          if (!payload) continue
+          await fetchJson("/api/connectors?draft=1", { method: "POST", body: payload, timeoutMs: 12000 })
+        }
+
+        await loadProjects()
+      })
+    },
+    [withAction, loadProjects]
+  )
+
+  const saveDraftPolicies = useCallback(
+    (next) => {
+      const nextArr = Array.isArray(next) ? next.filter(Boolean) : []
+      const prevSnapshot = Array.isArray(draftPoliciesRef.current) ? draftPoliciesRef.current.filter(Boolean) : []
+      setDraftPolicies(nextArr)
+
+      const toKey = (p) => String(p?.projectId || "").trim()
+
+      void withAction(async () => {
+        const prevArr = prevSnapshot
+        const prevByKey = new Map(prevArr.map((p) => [toKey(p), p]).filter(([k]) => k))
+        const nextByKey = new Map(nextArr.map((p) => [toKey(p), p]).filter(([k]) => k))
+
+        const deleted = Array.from(prevByKey.keys()).filter((k) => !nextByKey.has(k))
+        const added = Array.from(nextByKey.keys()).filter((k) => !prevByKey.has(k))
+
+        for (const k of deleted) {
+          await fetchJson("/api/policies?draft=1", { method: "DELETE", body: { projectId: k }, timeoutMs: 12000 })
+        }
+
+        for (const [k, payload] of nextByKey.entries()) {
+          if (!prevByKey.has(k)) continue
+          const before = prevByKey.get(k)
+          if (JSON.stringify(before) === JSON.stringify(payload)) continue
+          await fetchJson("/api/policies?draft=1", { method: "PUT", body: payload, timeoutMs: 12000 })
+        }
+
+        for (const k of added) {
+          const payload = nextByKey.get(k)
+          if (!payload) continue
+          await fetchJson("/api/policies?draft=1", { method: "POST", body: payload, timeoutMs: 12000 })
+        }
+
+        await loadProjects()
+      })
+    },
+    [withAction, loadProjects]
+  )
 
   const saveAlertRouting = useCallback((next) => {
     setAlertRouting(next)
@@ -767,6 +958,14 @@ export default function App() {
       return next
     })
   }, [writeAlertIncidents])
+
+  const publishDrafts = useCallback(() => {
+    if (!projectId) return
+    void withAction(async () => {
+      await fetchJson("/api/publish", { method: "POST", timeoutMs: 12000 })
+      await loadProjects()
+    }, projectId)
+  }, [withAction, loadProjects, projectId])
 
   useEffect(() => {
     if (!projectId) return
@@ -844,6 +1043,26 @@ export default function App() {
     const to = String(newId || "").trim()
     if (!from || !to || from === to) return
 
+    const existing = Array.isArray(pendingProjectRenamesRef.current) ? pendingProjectRenamesRef.current : []
+    let chained = false
+    const nextRenames = existing
+      .map((r) => {
+        const rFrom = String(r?.from || "").trim()
+        const rTo = String(r?.to || "").trim()
+        if (rFrom && rTo && rTo === from) {
+          chained = true
+          return { from: rFrom, to }
+        }
+        return r
+      })
+      .filter((r) => String(r?.from || "").trim() !== from)
+
+    if (!chained) {
+      nextRenames.push({ from, to })
+    }
+
+    pendingProjectRenamesRef.current = nextRenames
+
     setDraftConnectors((prev) => {
       const arr = Array.isArray(prev) ? prev : []
 
@@ -870,8 +1089,6 @@ export default function App() {
           }
         })
         .filter(Boolean)
-
-      writeDraftConnectors(next)
       return next
     })
 
@@ -882,7 +1099,6 @@ export default function App() {
         if (p.projectId !== from) return p
         return { ...p, projectId: to }
       })
-      writeDraftPolicies(next)
       return next
     })
   }, [])
@@ -929,10 +1145,38 @@ export default function App() {
           <button className="btn btn-ghost" disabled={busy} onClick={() => setProjectsModalOpen(true)}>
             Projects
           </button>
+          <button className="btn btn-ghost" disabled={effectiveBusy} onClick={publishDrafts}>
+            Publish Drafts
+          </button>
+          <select
+            className="project-select"
+            value={activeEnv}
+            onChange={(e) => {
+              const next = e.target.value === "draft" ? "draft" : "live"
+              setActiveEnv(next)
+              if (projectId) writeUrlProject(projectId, { draft: next === "draft" })
+            }}
+            disabled={busy}
+          >
+            <option value="live" disabled={!hasLiveConfig}>
+              Live
+            </option>
+            <option value="draft">Draft</option>
+          </select>
           <select
             className="project-select"
             value={projectId || ""}
-            onChange={(e) => setProjectId(e.target.value || null)}
+            onChange={(e) => {
+              const nextId = e.target.value || null
+              setProjectId(nextId)
+              const nextHasLive = nextId ? (projectsRef.current || []).some((p) => p && p.id === nextId) : false
+              if (nextId && !nextHasLive) {
+                setActiveEnv("draft")
+                writeUrlProject(nextId, { draft: true })
+              } else if (nextId) {
+                writeUrlProject(nextId, { draft: activeEnv === "draft" })
+              }
+            }}
             disabled={busy}
           >
             {projects.length > 0 && (
@@ -944,9 +1188,9 @@ export default function App() {
                 ))}
               </optgroup>
             )}
-            {draftProjects.length > 0 && (
+            {draftOnlyProjects.length > 0 && (
               <optgroup label="Draft">
-                {draftProjects.map((p) => (
+                {draftOnlyProjects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name || p.id}
                   </option>

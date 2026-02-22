@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { createPublicClient, http, parseAbi, parseAbiItem, recoverMessageAddress } from "viem"
+import { createPublicClient, http, isAddress, parseAbi, parseAbiItem, recoverMessageAddress } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { sepolia } from "viem/chains"
 
@@ -49,13 +49,33 @@ try {
 let activeRun = null
 const runsById = new Map()
 
-const reservewatchRoot = (() => {
-  const __filename = fileURLToPath(import.meta.url)
-  const __dirname = path.dirname(__filename)
-  return path.resolve(__dirname, "..")
-})()
+const serverRoot = path.dirname(fileURLToPath(import.meta.url))
+const reservewatchRoot = path.resolve(serverRoot, "..")
 
 const defaultEnvPath = path.resolve(reservewatchRoot, ".env")
+
+const adminKey = String(process.env.RESERVEWATCH_ADMIN_KEY || "").trim()
+
+const readAdminKey = (req) => {
+  const headerKey = String(req.get("x-admin-key") || "").trim()
+  if (headerKey) return headerKey
+
+  const auth = String(req.get("authorization") || "").trim()
+  const match = auth.match(/^Bearer\s+(.+)$/i)
+  if (match) return match[1].trim()
+
+  return ""
+}
+
+const requireAdmin = (req, res, next) => {
+  if (!adminKey) return next()
+  const provided = readAdminKey(req)
+  if (provided !== adminKey) {
+    res.status(401).json({ error: "unauthorized" })
+    return
+  }
+  next()
+}
 
 const createRunId = () => {
   const rand = Math.random().toString(16).slice(2, 10)
@@ -166,6 +186,240 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 const normalizeAddress = (addr) => {
   if (!addr) return ""
   return String(addr).toLowerCase()
+}
+
+const normalizeId = (value) => String(value || "").trim()
+
+const normalizeConnectorId = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+}
+
+const numberOrNull = (value) => {
+  if (value === null || value === undefined) return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+const PROJECT_ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/
+const CONNECTOR_ID_RE = PROJECT_ID_RE
+
+const parseOptionalNumber = (value, label, { min = null } = {}) => {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return { value: null, error: "" }
+  }
+  const n = Number(value)
+  if (!Number.isFinite(n)) {
+    return { value: null, error: `${label} must be a number` }
+  }
+  if (min !== null && n < min) {
+    return { value: null, error: `${label} must be >= ${min}` }
+  }
+  return { value: n, error: "" }
+}
+
+const normalizeProjectPayload = (payload, { requireId = true } = {}) => {
+  if (!payload || typeof payload !== "object") {
+    return { error: "project payload is required", value: null }
+  }
+
+  const id = normalizeId(payload.id)
+  if (requireId && !id) return { error: "project id is required", value: null }
+  if (id && !PROJECT_ID_RE.test(id)) {
+    return { error: "project id must be 2-63 chars: lowercase letters, numbers, hyphens", value: null }
+  }
+
+  const name = String(payload.name || "").trim()
+  if (!name) return { error: "project name is required", value: null }
+
+  const chainSelectorName = String(payload.chainSelectorName || "").trim()
+  if (!chainSelectorName) return { error: "chain selector is required", value: null }
+
+  const receiverAddress = String(payload.receiverAddress || "").trim()
+  if (!receiverAddress) return { error: "receiver address is required", value: null }
+  if (!isAddress(receiverAddress)) return { error: "receiver address is invalid", value: null }
+
+  const liabilityTokenAddress = String(payload.liabilityTokenAddress || "").trim()
+  if (!liabilityTokenAddress) return { error: "liability token address is required", value: null }
+  if (!isAddress(liabilityTokenAddress)) return { error: "liability token address is invalid", value: null }
+
+  const rpcUrl = String(payload.rpcUrl || "").trim()
+  if (!rpcUrl) return { error: "rpc url is required", value: null }
+
+  const explorerBaseUrl = String(payload.explorerBaseUrl || "").trim()
+  if (!explorerBaseUrl) return { error: "explorer base url is required", value: null }
+
+  const supplyChainSelectorName = String(payload.supplyChainSelectorName || "").trim()
+  const supplyRpcUrl = String(payload.supplyRpcUrl || "").trim()
+  const supplyLiabilityTokenAddress = String(payload.supplyLiabilityTokenAddress || "").trim()
+
+  if (supplyLiabilityTokenAddress && !isAddress(supplyLiabilityTokenAddress)) {
+    return { error: "supply liability token address is invalid", value: null }
+  }
+
+  const supplyDiffers =
+    supplyChainSelectorName &&
+    chainSelectorName &&
+    supplyChainSelectorName.toLowerCase() !== chainSelectorName.toLowerCase()
+
+  if (supplyDiffers && !supplyRpcUrl) {
+    return { error: "supply rpc url is required when supply chain differs", value: null }
+  }
+
+  const expectedForwarderAddress = String(payload.expectedForwarderAddress || "").trim()
+  if (expectedForwarderAddress && !isAddress(expectedForwarderAddress)) {
+    return { error: "expected forwarder address is invalid", value: null }
+  }
+
+  const maxReserveAge = parseOptionalNumber(payload.maxReserveAgeS, "maxReserveAgeS", { min: 0 })
+  if (maxReserveAge.error) return { error: maxReserveAge.error, value: null }
+
+  const maxMismatch = parseOptionalNumber(payload.maxReserveMismatchRatio, "maxReserveMismatchRatio", { min: 0 })
+  if (maxMismatch.error) return { error: maxMismatch.error, value: null }
+
+  const project = {
+    id,
+    name,
+    symbol: String(payload.symbol || "").trim(),
+    chainSelectorName,
+    rpcUrl,
+    supplyChainSelectorName,
+    supplyRpcUrl,
+    explorerBaseUrl,
+    receiverAddress,
+    liabilityTokenAddress,
+    supplyLiabilityTokenAddress,
+    expectedForwarderAddress,
+    maxReserveAgeS: maxReserveAge.value,
+    maxReserveMismatchRatio: maxMismatch.value,
+  }
+
+  return { error: "", value: project }
+}
+
+const normalizeConnectorPayload = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { error: "connector payload is required", value: null }
+  }
+
+  const projectId = normalizeId(payload.projectId)
+  if (!projectId) return { error: "projectId is required", value: null }
+
+  const id = normalizeConnectorId(payload.id)
+  if (!id) return { error: "connector id is required", value: null }
+  if (!CONNECTOR_ID_RE.test(id)) {
+    return { error: "connector id must be 2-63 chars: lowercase letters, numbers, hyphens", value: null }
+  }
+
+  const name = String(payload.name || "").trim()
+  if (!name) return { error: "connector name is required", value: null }
+
+  const role = String(payload.role || "").trim()
+  if (!role) return { error: "connector role is required", value: null }
+  if (role !== "primary" && role !== "secondary") {
+    return { error: "connector role must be primary or secondary", value: null }
+  }
+
+  const url = String(payload.url || "").trim()
+  if (!url) return { error: "connector url is required", value: null }
+
+  const expectedSigner = String(payload.expectedSigner || "").trim()
+  if (expectedSigner && !isAddress(expectedSigner)) {
+    return { error: "expected signer address is invalid", value: null }
+  }
+
+  const lastTestedAt = numberOrNull(payload.lastTestedAt)
+  const lastTestOk = typeof payload.lastTestOk === "boolean" ? payload.lastTestOk : null
+  const lastTestMessage = typeof payload.lastTestMessage === "string" ? payload.lastTestMessage : ""
+
+  return {
+    error: "",
+    value: {
+      id,
+      projectId,
+      type: String(payload.type || "http_reserve").trim() || "http_reserve",
+      name,
+      role,
+      url,
+      expectedSigner,
+      lastTestedAt,
+      lastTestOk,
+      lastTestMessage,
+    },
+  }
+}
+
+const normalizePolicyPayload = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return { error: "policy payload is required", value: null }
+  }
+
+  const projectId = normalizeId(payload.projectId)
+  if (!projectId) return { error: "projectId is required", value: null }
+
+  const consensusMode = String(payload.consensusMode || "require_match").trim()
+  if (!consensusMode) return { error: "consensus mode is required", value: null }
+  if (consensusMode !== "primary_only" && consensusMode !== "require_match" && consensusMode !== "conservative_min") {
+    return { error: "consensus mode is invalid", value: null }
+  }
+
+  const minCoverage = parseOptionalNumber(payload.minCoverageBps, "minCoverageBps", { min: 0 })
+  if (minCoverage.error) return { error: minCoverage.error, value: null }
+
+  const maxReserveAge = parseOptionalNumber(payload.maxReserveAgeS, "maxReserveAgeS", { min: 0 })
+  if (maxReserveAge.error) return { error: maxReserveAge.error, value: null }
+
+  const maxMismatch = parseOptionalNumber(payload.maxMismatchRatio, "maxMismatchRatio", { min: 0 })
+  if (maxMismatch.error) return { error: maxMismatch.error, value: null }
+
+  return {
+    error: "",
+    value: {
+      projectId,
+      consensusMode,
+      minCoverageBps: minCoverage.value,
+      maxReserveAgeS: maxReserveAge.value,
+      maxMismatchRatio: maxMismatch.value,
+      updatedAt: Number(payload.updatedAt) || Date.now(),
+    },
+  }
+}
+
+const readJsonFile = (targetPath, fallback) => {
+  try {
+    return JSON.parse(fs.readFileSync(targetPath, "utf8"))
+  } catch {
+    return fallback
+  }
+}
+
+const writeJsonFile = (targetPath, payload) => {
+  const dir = path.dirname(targetPath)
+  fs.mkdirSync(dir, { recursive: true })
+  const tmpPath = `${targetPath}.tmp`
+  fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2) + "\n")
+  fs.renameSync(tmpPath, targetPath)
+}
+
+const resolveDraftJsonPath = (targetPath) => {
+  const p = String(targetPath || "")
+  if (!p) return p
+  if (p.toLowerCase().endsWith(".json")) {
+    return p.slice(0, -5) + "-draft.json"
+  }
+  return `${p}-draft`
+}
+
+const readDraftFlag = (req) => {
+  const q = req?.query?.draft
+  const b = req?.body?.draft
+  const raw = q !== undefined ? q : b
+  if (raw === true || raw === 1) return true
+  const s = String(raw || "").trim().toLowerCase()
+  return s === "1" || s === "true" || s === "yes" || s === "on"
 }
 
 const getAttestationHistory = async ({ project, limit }) => {
@@ -281,19 +535,20 @@ const getDefaultProjectId = () => {
   return null
 }
 
-const resolveProjectsPath = () => {
-  const override = process.env.RESERVEWATCH_PROJECTS_PATH
+const resolveProjectsPath = ({ draft = false } = {}) => {
+  const override = draft ? process.env.RESERVEWATCH_DRAFT_PROJECTS_PATH : process.env.RESERVEWATCH_PROJECTS_PATH
   if (override) {
     return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override)
   }
 
   const __filename = fileURLToPath(import.meta.url)
   const __dirname = path.dirname(__filename)
-  return path.resolve(__dirname, "./projects.json")
+  const live = path.resolve(__dirname, "./projects.json")
+  return draft ? resolveDraftJsonPath(live) : live
 }
 
-const loadProjectsConfig = () => {
-  const p = resolveProjectsPath()
+const loadProjectsConfig = ({ draft = false } = {}) => {
+  const p = resolveProjectsPath({ draft })
   try {
     const raw = JSON.parse(fs.readFileSync(p, "utf8"))
     const projects = Array.isArray(raw?.projects) ? raw.projects : Array.isArray(raw) ? raw : []
@@ -307,11 +562,119 @@ const loadProjectsConfig = () => {
   }
 }
 
+const loadProjectsStore = ({ draft = false } = {}) => {
+  const cfg = loadProjectsConfig({ draft })
+  if (cfg) {
+    if (draft) {
+      const hasProjects = Array.isArray(cfg.projects) && cfg.projects.length > 0
+      if (!hasProjects) {
+        const liveCfg = loadProjectsConfig({ draft: false })
+        if (liveCfg?.projects?.length) {
+          return {
+            path: resolveProjectsPath({ draft: true }),
+            defaultProjectId: liveCfg.defaultProjectId,
+            projects: Array.isArray(liveCfg.projects) ? liveCfg.projects : [],
+          }
+        }
+      }
+    }
+    return cfg
+  }
+
+  if (draft) {
+    const liveCfg = loadProjectsConfig({ draft: false })
+    if (liveCfg) {
+      return {
+        path: resolveProjectsPath({ draft: true }),
+        defaultProjectId: liveCfg.defaultProjectId,
+        projects: Array.isArray(liveCfg.projects) ? liveCfg.projects : [],
+      }
+    }
+  }
+  return {
+    path: resolveProjectsPath({ draft }),
+    defaultProjectId: null,
+    projects: [],
+  }
+}
+
+const saveProjectsConfig = (cfg) => {
+  writeJsonFile(cfg.path, {
+    defaultProjectId: cfg.defaultProjectId || null,
+    projects: Array.isArray(cfg.projects) ? cfg.projects : [],
+  })
+}
+
+const resolveConnectorsPath = ({ draft = false } = {}) => {
+  const override = draft ? process.env.RESERVEWATCH_DRAFT_CONNECTORS_PATH : process.env.RESERVEWATCH_CONNECTORS_PATH
+  if (override) {
+    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override)
+  }
+
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  const live = path.resolve(__dirname, "./connectors.json")
+  return draft ? resolveDraftJsonPath(live) : live
+}
+
+const loadConnectorsConfig = ({ draft = false } = {}) => {
+  const p = resolveConnectorsPath({ draft })
+  const raw = readJsonFile(p, null)
+  const rawLive = draft && raw === null ? readJsonFile(resolveConnectorsPath({ draft: false }), null) : raw
+  const connectors = Array.isArray(rawLive?.connectors) ? rawLive.connectors : Array.isArray(rawLive) ? rawLive : []
+  return {
+    path: p,
+    connectors,
+  }
+}
+
+const saveConnectorsConfig = (cfg) => {
+  writeJsonFile(cfg.path, {
+    connectors: Array.isArray(cfg.connectors) ? cfg.connectors : [],
+  })
+}
+
+const resolvePoliciesPath = ({ draft = false } = {}) => {
+  const override = draft
+    ? process.env.RESERVEWATCH_DRAFT_POLICIES_PATH || process.env.RESERVEWATCH_DRAFT_POLICY_PATH
+    : process.env.RESERVEWATCH_POLICIES_PATH || process.env.RESERVEWATCH_POLICY_PATH
+  if (override) {
+    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override)
+  }
+
+  const __filename = fileURLToPath(import.meta.url)
+  const __dirname = path.dirname(__filename)
+  const live = path.resolve(__dirname, "./policies.json")
+  return draft ? resolveDraftJsonPath(live) : live
+}
+
+const loadPoliciesConfig = ({ draft = false } = {}) => {
+  const p = resolvePoliciesPath({ draft })
+  const raw = readJsonFile(p, null)
+  const rawLive = draft && raw === null ? readJsonFile(resolvePoliciesPath({ draft: false }), null) : raw
+  const policies = Array.isArray(rawLive?.policies) ? rawLive.policies : Array.isArray(rawLive) ? rawLive : []
+  return {
+    path: p,
+    policies,
+  }
+}
+
+const savePoliciesConfig = (cfg) => {
+  writeJsonFile(cfg.path, {
+    policies: Array.isArray(cfg.policies) ? cfg.policies : [],
+  })
+}
+
 const getFallbackProject = () => {
   const cfg = loadWorkflowConfig()
   return {
     id: "default",
     name: "Default (workflow config)",
+    symbol: "",
+    chainSelectorName: process.env.CHAIN_SELECTOR_NAME || cfg?.chainSelectorName || "ethereum-testnet-sepolia",
+    supplyChainSelectorName: cfg?.supplyChainSelectorName || null,
+    supplyRpcUrl: cfg?.supplyRpcUrl || null,
+    supplyLiabilityTokenAddress: cfg?.supplyLiabilityTokenAddress || null,
     receiverAddress: process.env.RECEIVER_ADDRESS || cfg?.receiverAddress || "",
     liabilityTokenAddress: process.env.LIABILITY_TOKEN_ADDRESS || cfg?.liabilityTokenAddress || "",
     rpcUrl: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
@@ -322,8 +685,8 @@ const getFallbackProject = () => {
   }
 }
 
-const listProjects = () => {
-  const cfg = loadProjectsConfig()
+const listProjects = ({ draft = false } = {}) => {
+  const cfg = draft ? loadProjectsStore({ draft: true }) : loadProjectsConfig({ draft: false })
   const fallback = getFallbackProject()
 
   if (cfg?.projects?.length) {
@@ -332,8 +695,13 @@ const listProjects = () => {
       .map((p) => ({
         id: p.id,
         name: p.name || p.id,
+        symbol: p.symbol || "",
+        chainSelectorName: p.chainSelectorName || fallback.chainSelectorName || "",
+        supplyChainSelectorName: p.supplyChainSelectorName || null,
+        supplyRpcUrl: p.supplyRpcUrl || null,
         receiverAddress: p.receiverAddress || "",
         liabilityTokenAddress: p.liabilityTokenAddress || "",
+        supplyLiabilityTokenAddress: p.supplyLiabilityTokenAddress || null,
         rpcUrl: p.rpcUrl || fallback.rpcUrl,
         explorerBaseUrl: p.explorerBaseUrl || fallback.explorerBaseUrl,
         expectedForwarderAddress: p.expectedForwarderAddress || null,
@@ -345,8 +713,8 @@ const listProjects = () => {
   return [fallback]
 }
 
-const getProjectById = (projectId) => {
-  const all = listProjects()
+const getProjectById = (projectId, { draft = false } = {}) => {
+  const all = listProjects({ draft })
 
   if (!projectId) {
     const defaultId = getDefaultProjectId()
@@ -358,6 +726,28 @@ const getProjectById = (projectId) => {
   }
   const found = all.find((p) => p.id === projectId)
   return found || all[0]
+}
+
+const listConnectors = (projectId = null, { draft = false } = {}) => {
+  const cfg = loadConnectorsConfig({ draft })
+  const all = Array.isArray(cfg?.connectors) ? cfg.connectors : []
+  const pid = projectId ? normalizeId(projectId) : null
+  return all.filter((c) => {
+    if (!c || typeof c.id !== "string" || typeof c.projectId !== "string") return false
+    if (!pid) return true
+    return normalizeId(c.projectId) === pid
+  })
+}
+
+const listPolicies = (projectId = null, { draft = false } = {}) => {
+  const cfg = loadPoliciesConfig({ draft })
+  const all = Array.isArray(cfg?.policies) ? cfg.policies : []
+  const pid = projectId ? normalizeId(projectId) : null
+  return all.filter((p) => {
+    if (!p || typeof p.projectId !== "string") return false
+    if (!pid) return true
+    return normalizeId(p.projectId) === pid
+  })
 }
 
 const maybeSendWebhook = async (payload) => {
@@ -757,9 +1147,387 @@ app.get("/incident/feed", (req, res) => {
 })
 
 app.get("/api/projects", (req, res) => {
-  const defaultProjectId = getDefaultProjectId()
-  const projects = listProjects().map((p) => ({ id: p.id, name: p.name }))
-  res.json({ defaultProjectId, projects })
+  const draft = readDraftFlag(req)
+  const store = loadProjectsStore({ draft })
+  const projects = listProjects({ draft })
+  res.json({ defaultProjectId: store.defaultProjectId, projects })
+})
+
+app.post("/api/projects", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const result = normalizeProjectPayload(req.body)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const store = loadProjectsStore({ draft })
+  const nextId = normalizeId(result.value.id)
+
+  const exists = store.projects.some((p) => normalizeId(p?.id) === nextId)
+  if (exists) {
+    res.status(409).json({ error: "project already exists" })
+    return
+  }
+
+  store.projects = [...store.projects, result.value]
+  const makeDefault = Boolean(req.body?.makeDefault)
+  if (!store.defaultProjectId || makeDefault) {
+    store.defaultProjectId = nextId
+  }
+
+  saveProjectsConfig(store)
+  res.json({ project: result.value, defaultProjectId: store.defaultProjectId })
+})
+
+app.put("/api/projects", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const targetId = normalizeId(req.body?.previousId || req.body?.id || req.query?.id)
+  if (!targetId) {
+    res.status(400).json({ error: "project id is required" })
+    return
+  }
+
+  const payload = { ...req.body, id: req.body?.id || targetId }
+  const result = normalizeProjectPayload(payload)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const store = loadProjectsStore({ draft })
+  const idx = store.projects.findIndex((p) => normalizeId(p?.id) === targetId)
+  if (idx < 0) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  const nextId = normalizeId(result.value.id)
+  if (nextId !== targetId) {
+    const conflict = store.projects.some((p, i) => i !== idx && normalizeId(p?.id) === nextId)
+    if (conflict) {
+      res.status(409).json({ error: "project id already exists" })
+      return
+    }
+  }
+
+  store.projects[idx] = result.value
+
+  if (store.defaultProjectId === targetId) {
+    store.defaultProjectId = nextId
+  }
+
+  if (nextId !== targetId) {
+    const connectorsCfg = loadConnectorsConfig({ draft })
+    connectorsCfg.connectors = (Array.isArray(connectorsCfg.connectors) ? connectorsCfg.connectors : []).map((c) => {
+      if (!c || typeof c.projectId !== "string") return c
+      if (normalizeId(c.projectId) !== targetId) return c
+      return { ...c, projectId: nextId }
+    })
+    saveConnectorsConfig(connectorsCfg)
+
+    const policiesCfg = loadPoliciesConfig({ draft })
+    policiesCfg.policies = (Array.isArray(policiesCfg.policies) ? policiesCfg.policies : []).map((p) => {
+      if (!p || typeof p.projectId !== "string") return p
+      if (normalizeId(p.projectId) !== targetId) return p
+      return { ...p, projectId: nextId }
+    })
+    savePoliciesConfig(policiesCfg)
+  }
+
+  saveProjectsConfig(store)
+  res.json({ project: store.projects[idx], defaultProjectId: store.defaultProjectId })
+})
+
+app.delete("/api/projects", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const targetId = normalizeId(req.body?.id || req.query?.id)
+  if (!targetId) {
+    res.status(400).json({ error: "project id is required" })
+    return
+  }
+
+  const store = loadProjectsStore({ draft })
+  const before = store.projects.length
+  store.projects = store.projects.filter((p) => normalizeId(p?.id) !== targetId)
+  if (before === store.projects.length) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  if (store.defaultProjectId === targetId) {
+    store.defaultProjectId = store.projects[0]?.id || null
+  }
+
+  saveProjectsConfig(store)
+
+  const connectorsCfg = loadConnectorsConfig({ draft })
+  connectorsCfg.connectors = (Array.isArray(connectorsCfg.connectors) ? connectorsCfg.connectors : []).filter(
+    (c) => normalizeId(c?.projectId) !== targetId
+  )
+  saveConnectorsConfig(connectorsCfg)
+
+  const policiesCfg = loadPoliciesConfig({ draft })
+  policiesCfg.policies = (Array.isArray(policiesCfg.policies) ? policiesCfg.policies : []).filter(
+    (p) => normalizeId(p?.projectId) !== targetId
+  )
+  savePoliciesConfig(policiesCfg)
+
+  res.json({ ok: true, defaultProjectId: store.defaultProjectId })
+})
+
+app.get("/api/connectors", (req, res) => {
+  const draft = readDraftFlag(req)
+  const projectId =
+    typeof req.query?.project === "string"
+      ? req.query.project
+      : typeof req.query?.projectId === "string"
+        ? req.query.projectId
+        : null
+  const connectors = listConnectors(projectId, { draft })
+  res.json({ projectId: projectId || null, connectors })
+})
+
+app.post("/api/connectors", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const result = normalizeConnectorPayload(req.body)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const projectExists = listProjects({ draft }).some((p) => normalizeId(p?.id) === normalizeId(result.value.projectId))
+  if (!projectExists) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  const cfg = loadConnectorsConfig({ draft })
+  const connectors = Array.isArray(cfg.connectors) ? cfg.connectors : []
+  const exists = connectors.some(
+    (c) => normalizeId(c?.projectId) === result.value.projectId && normalizeConnectorId(c?.id) === result.value.id
+  )
+  if (exists) {
+    res.status(409).json({ error: "connector already exists" })
+    return
+  }
+
+  cfg.connectors = [...connectors, result.value]
+  saveConnectorsConfig(cfg)
+  res.json({ connector: result.value })
+})
+
+app.put("/api/connectors", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const targetProjectId = normalizeId(req.body?.previousProjectId || req.body?.projectId || req.query?.projectId || req.query?.project)
+  const targetId = normalizeConnectorId(req.body?.previousId || req.body?.id || req.query?.id)
+  if (!targetProjectId || !targetId) {
+    res.status(400).json({ error: "projectId and connector id are required" })
+    return
+  }
+
+  const payload = {
+    ...req.body,
+    projectId: req.body?.projectId || targetProjectId,
+    id: req.body?.id || targetId,
+  }
+  const result = normalizeConnectorPayload(payload)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const projectExists = listProjects({ draft }).some((p) => normalizeId(p?.id) === normalizeId(result.value.projectId))
+  if (!projectExists) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  const cfg = loadConnectorsConfig({ draft })
+  const connectors = Array.isArray(cfg.connectors) ? cfg.connectors : []
+  const idx = connectors.findIndex(
+    (c) => normalizeId(c?.projectId) === targetProjectId && normalizeConnectorId(c?.id) === targetId
+  )
+  if (idx < 0) {
+    res.status(404).json({ error: "connector not found" })
+    return
+  }
+
+  if (result.value.projectId !== targetProjectId || result.value.id !== targetId) {
+    const conflict = connectors.some(
+      (c, i) =>
+        i !== idx &&
+        normalizeId(c?.projectId) === result.value.projectId &&
+        normalizeConnectorId(c?.id) === result.value.id
+    )
+    if (conflict) {
+      res.status(409).json({ error: "connector id already exists" })
+      return
+    }
+  }
+
+  connectors[idx] = result.value
+  cfg.connectors = connectors
+  saveConnectorsConfig(cfg)
+  res.json({ connector: result.value })
+})
+
+app.delete("/api/connectors", requireAdmin, (req, res) => {
+  const draft = readDraftFlag(req)
+  const projectId = normalizeId(req.body?.projectId || req.query?.projectId || req.query?.project)
+  const id = normalizeConnectorId(req.body?.id || req.query?.id)
+  if (!projectId || !id) {
+    res.status(400).json({ error: "projectId and connector id are required" })
+    return
+  }
+
+  const cfg = loadConnectorsConfig({ draft })
+  const connectors = Array.isArray(cfg.connectors) ? cfg.connectors : []
+  const next = connectors.filter(
+    (c) => !(normalizeId(c?.projectId) === projectId && normalizeConnectorId(c?.id) === id)
+  )
+
+  if (next.length === connectors.length) {
+    res.status(404).json({ error: "connector not found" })
+    return
+  }
+
+  cfg.connectors = next
+  saveConnectorsConfig(cfg)
+  res.json({ ok: true })
+})
+
+const handlePolicyGet = (req, res) => {
+  const draft = readDraftFlag(req)
+  const projectId =
+    typeof req.query?.project === "string"
+      ? req.query.project
+      : typeof req.query?.projectId === "string"
+        ? req.query.projectId
+        : null
+  const policies = listPolicies(projectId, { draft })
+  if (projectId) {
+    res.json({ projectId, policy: policies[0] || null })
+    return
+  }
+  res.json({ policies })
+}
+
+const handlePolicyPost = (req, res) => {
+  const draft = readDraftFlag(req)
+  const result = normalizePolicyPayload(req.body)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const projectExists = listProjects({ draft }).some((p) => normalizeId(p?.id) === normalizeId(result.value.projectId))
+  if (!projectExists) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  const cfg = loadPoliciesConfig({ draft })
+  const policies = Array.isArray(cfg.policies) ? cfg.policies : []
+  const exists = policies.some((p) => normalizeId(p?.projectId) === result.value.projectId)
+  if (exists) {
+    res.status(409).json({ error: "policy already exists" })
+    return
+  }
+
+  cfg.policies = [...policies, result.value]
+  savePoliciesConfig(cfg)
+  res.json({ policy: result.value })
+}
+
+const handlePolicyPut = (req, res) => {
+  const draft = readDraftFlag(req)
+  const targetProjectId = normalizeId(req.body?.previousProjectId || req.body?.projectId || req.query?.projectId || req.query?.project)
+  if (!targetProjectId) {
+    res.status(400).json({ error: "projectId is required" })
+    return
+  }
+
+  const payload = { ...req.body, projectId: req.body?.projectId || targetProjectId }
+  const result = normalizePolicyPayload(payload)
+  if (result.error) {
+    res.status(400).json({ error: result.error })
+    return
+  }
+
+  const projectExists = listProjects({ draft }).some((p) => normalizeId(p?.id) === normalizeId(result.value.projectId))
+  if (!projectExists) {
+    res.status(404).json({ error: "project not found" })
+    return
+  }
+
+  const cfg = loadPoliciesConfig({ draft })
+  const policies = Array.isArray(cfg.policies) ? cfg.policies : []
+  const idx = policies.findIndex((p) => normalizeId(p?.projectId) === targetProjectId)
+  if (idx < 0) {
+    res.status(404).json({ error: "policy not found" })
+    return
+  }
+
+  policies[idx] = result.value
+  cfg.policies = policies
+  savePoliciesConfig(cfg)
+  res.json({ policy: result.value })
+}
+
+const handlePolicyDelete = (req, res) => {
+  const draft = readDraftFlag(req)
+  const projectId = normalizeId(req.body?.projectId || req.query?.projectId || req.query?.project)
+  if (!projectId) {
+    res.status(400).json({ error: "projectId is required" })
+    return
+  }
+
+  const cfg = loadPoliciesConfig({ draft })
+  const policies = Array.isArray(cfg.policies) ? cfg.policies : []
+  const next = policies.filter((p) => normalizeId(p?.projectId) !== projectId)
+  if (next.length === policies.length) {
+    res.status(404).json({ error: "policy not found" })
+    return
+  }
+
+  cfg.policies = next
+  savePoliciesConfig(cfg)
+  res.json({ ok: true })
+}
+
+app.get("/api/policy", handlePolicyGet)
+app.get("/api/policies", handlePolicyGet)
+app.post("/api/policy", requireAdmin, handlePolicyPost)
+app.post("/api/policies", requireAdmin, handlePolicyPost)
+app.put("/api/policy", requireAdmin, handlePolicyPut)
+app.put("/api/policies", requireAdmin, handlePolicyPut)
+app.delete("/api/policy", requireAdmin, handlePolicyDelete)
+app.delete("/api/policies", requireAdmin, handlePolicyDelete)
+
+app.post("/api/publish", requireAdmin, (req, res) => {
+  const draftProjects = loadProjectsStore({ draft: true })
+  const draftConnectors = loadConnectorsConfig({ draft: true })
+  const draftPolicies = loadPoliciesConfig({ draft: true })
+
+  const liveProjects = loadProjectsStore({ draft: false })
+  liveProjects.defaultProjectId = draftProjects.defaultProjectId || null
+  liveProjects.projects = Array.isArray(draftProjects.projects) ? draftProjects.projects : []
+  saveProjectsConfig(liveProjects)
+
+  const liveConnectors = loadConnectorsConfig({ draft: false })
+  liveConnectors.connectors = Array.isArray(draftConnectors.connectors) ? draftConnectors.connectors : []
+  saveConnectorsConfig(liveConnectors)
+
+  const livePolicies = loadPoliciesConfig({ draft: false })
+  livePolicies.policies = Array.isArray(draftPolicies.policies) ? draftPolicies.policies : []
+  savePoliciesConfig(livePolicies)
+
+  saveProjectsConfig({ ...draftProjects, projects: liveProjects.projects, defaultProjectId: liveProjects.defaultProjectId })
+  saveConnectorsConfig({ ...draftConnectors, connectors: liveConnectors.connectors })
+  savePoliciesConfig({ ...draftPolicies, policies: livePolicies.policies })
+
+  res.json({ ok: true })
 })
 
 app.get("/api/status", async (req, res) => {
