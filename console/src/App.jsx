@@ -546,8 +546,8 @@ export default function App() {
   const loadData = useCallback(
     async (overrideProjectId = null, options = {}) => {
       const activeProjectId = overrideProjectId || projectId
-      const live =
-        activeEnv === "live" && activeProjectId ? (projectsRef.current || []).some((p) => p && p.id === activeProjectId) : false
+      const env = options?.env === "draft" ? "draft" : options?.env === "live" ? "live" : activeEnv
+      const live = env === "live" && activeProjectId ? (projectsRef.current || []).some((p) => p && p.id === activeProjectId) : false
 
       if (!activeProjectId || !live) {
         setLiveStatus(null)
@@ -974,13 +974,20 @@ export default function App() {
     })
   }, [writeAlertIncidents])
 
-  const publishDrafts = useCallback(() => {
-    if (!projectId) return
-    void withAction(async () => {
-      await fetchJson("/api/publish", { method: "POST", timeoutMs: 12000 })
-      await loadProjects()
-    }, projectId)
-  }, [withAction, loadProjects, projectId])
+  const publishDrafts = useCallback(
+    async (targetProjectId = null) => {
+      const pid = targetProjectId || projectId
+      if (!pid) return
+      return withAction(async () => {
+        await fetchJson("/api/publish", { method: "POST", timeoutMs: 12000 })
+        await loadProjects()
+        setActiveEnv("live")
+        setProjectId(pid)
+        writeUrlProject(pid, { draft: false })
+      }, pid, { env: "live" })
+    },
+    [withAction, loadProjects, projectId]
+  )
 
   useEffect(() => {
     if (!projectId) return
@@ -1160,7 +1167,7 @@ export default function App() {
           <button className="btn btn-ghost" disabled={busy} onClick={() => setProjectsModalOpen(true)}>
             Projects
           </button>
-          <button className="btn btn-ghost" disabled={effectiveBusy} onClick={publishDrafts}>
+          <button className="btn btn-ghost" disabled={effectiveBusy} onClick={() => void publishDrafts()}>
             Publish Drafts
           </button>
           <select
@@ -1484,6 +1491,7 @@ export default function App() {
         onSaveDraftConnectors={saveDraftConnectors}
         onSaveDraftPolicies={saveDraftPolicies}
         onSelectProjectId={(id) => setProjectId(id || null)}
+        onPublishDrafts={publishDrafts}
       />
 
       <footer className="footer">

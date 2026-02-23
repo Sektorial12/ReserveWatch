@@ -438,6 +438,7 @@ export default function OnboardingWizardModal({
   onSaveDraftConnectors,
   onSaveDraftPolicies,
   onSelectProjectId,
+  onPublishDrafts,
 }) {
   const steps = [
     { id: "project", label: "Project" },
@@ -483,6 +484,9 @@ export default function OnboardingWizardModal({
   const [projectValidateBusy, setProjectValidateBusy] = useState(false)
   const [projectValidateResult, setProjectValidateResult] = useState(null)
   const [onchainSnapshot, setOnchainSnapshot] = useState(null)
+
+  const [publishBusy, setPublishBusy] = useState(false)
+  const [publishResult, setPublishResult] = useState(null)
 
   useEffect(() => {
     setProjectValidateResult(null)
@@ -533,6 +537,9 @@ export default function OnboardingWizardModal({
     setProjectValidateBusy(false)
     setProjectValidateResult(null)
     setOnchainSnapshot(null)
+
+    setPublishBusy(false)
+    setPublishResult(null)
   }, [open])
 
   const startFromOptions = useMemo(() => {
@@ -1069,6 +1076,32 @@ export default function OnboardingWizardModal({
   const onBack = () => {
     setError("")
     setStepIdx((s) => Math.max(0, s - 1))
+  }
+
+  const onPublish = async () => {
+    if (!draftProjectId) return
+    if (typeof onPublishDrafts !== "function") {
+      setError("Publish is not available")
+      return
+    }
+
+    const ok = window.confirm("Publish drafts to live configuration now?")
+    if (!ok) return
+
+    setError("")
+    setPublishBusy(true)
+    setPublishResult(null)
+    try {
+      await onPublishDrafts(draftProjectId)
+      setPublishResult({ at: Date.now(), ok: true, message: "Published" })
+      if (typeof onClose === "function") onClose()
+    } catch (err) {
+      const msg = String(err?.message || err)
+      setPublishResult({ at: Date.now(), ok: false, message: msg })
+      setError(msg)
+    } finally {
+      setPublishBusy(false)
+    }
   }
 
   const testConnection = async (key) => {
@@ -1683,6 +1716,26 @@ export default function OnboardingWizardModal({
 
           {step === "export" && (
             <div className="export">
+              <div className="card" style={{ marginBottom: 12 }}>
+                <div className="section-title">Publish</div>
+                <div className="tab-subtitle">Promote this draft configuration to live.</div>
+                <div className="form-actions" style={{ marginTop: 8, justifyContent: "flex-start" }}>
+                  <button
+                    className="btn btn-ok"
+                    disabled={!draftProjectId || publishBusy || typeof onPublishDrafts !== "function"}
+                    onClick={() => void onPublish()}
+                  >
+                    {publishBusy ? "Publishing..." : "Publish draft to live"}
+                  </button>
+                </div>
+
+                {publishResult && (
+                  <div className={publishResult.ok ? "wizard-test ok" : "wizard-test bad"}>
+                    {publishResult.ok ? "Publish ok" : "Publish failed"} · {publishResult.message}
+                  </div>
+                )}
+              </div>
+
               <div className="card" style={{ marginBottom: 12 }}>
                 <div className="section-title">Monitoring</div>
                 <div className="tab-subtitle">Draft projects are monitored client-side once selected.</div>
