@@ -1679,7 +1679,15 @@ app.get("/console", (req, res) => {
     return
   }
 
-  res.sendFile(legacyConsolePath)
+  if (fs.existsSync(legacyConsolePath)) {
+    res.sendFile(legacyConsolePath)
+    return
+  }
+
+  res
+    .status(404)
+    .type("text/plain")
+    .send("Console assets not found. Run: (1) cd console && npm install && npm run build (2) cd server && npm start")
 })
 
 app.get("/console/:projectId/status", (req, res) => {
@@ -1688,7 +1696,15 @@ app.get("/console/:projectId/status", (req, res) => {
     return
   }
 
-  res.sendFile(legacyConsolePath)
+  if (fs.existsSync(legacyConsolePath)) {
+    res.sendFile(legacyConsolePath)
+    return
+  }
+
+  res
+    .status(404)
+    .type("text/plain")
+    .send("Console assets not found. Run: (1) cd console && npm install && npm run build (2) cd server && npm start")
 })
 
 app.get("/:projectId/status", (req, res, next) => {
@@ -1704,7 +1720,15 @@ app.get("/:projectId/status", (req, res, next) => {
     return
   }
 
-  res.sendFile(legacyConsolePath)
+  if (fs.existsSync(legacyConsolePath)) {
+    res.sendFile(legacyConsolePath)
+    return
+  }
+
+  res
+    .status(404)
+    .type("text/plain")
+    .send("Console assets not found. Run: (1) cd console && npm install && npm run build (2) cd server && npm start")
 })
 
 app.use("/console", express.static(consoleRoot))
