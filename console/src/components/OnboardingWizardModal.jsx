@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import {
   createPublicClient,
@@ -121,6 +121,21 @@ const TEMPLATES = [
     },
   },
 ]
+
+const httpGetJson = async (url, { timeoutMs = 10_000 } = {}) => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) {
+      const text = await res.text().catch(() => "")
+      throw new Error(`HTTP ${res.status}${text ? ` ${text}` : ""}`)
+    }
+    return res.json()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
 
 const downloadText = (filename, content, contentType = "application/json") => {
   try {
@@ -322,14 +337,13 @@ const computeDerivedPreview = ({ reserves, onchain, project, policy }) => {
 const numberOrNull = (value) => {
   if (value === null || value === undefined || value === "") return null
   const n = Number(value)
-  return Number.isFinite(n) ? n : null
+  if (!Number.isFinite(n)) return null
+  return n
 }
 
 const buildActiveExport = ({ project, connectors, policy }) => {
-  if (!project?.id) return null
-
-  const primary = connectors.find((c) => String(c.role || "") === "primary") || null
-  const secondary = connectors.find((c) => String(c.role || "") === "secondary") || null
+  const primary = (connectors || []).find((c) => c && String(c.role || "").trim() === "primary") || null
+  const secondary = (connectors || []).find((c) => c && String(c.role || "").trim() === "secondary") || null
 
   const expectedSignerPrimary = String(primary?.expectedSigner || "").trim()
   const expectedSignerSecondary = String(secondary?.expectedSigner || "").trim()
@@ -370,7 +384,7 @@ const buildActiveExport = ({ project, connectors, policy }) => {
     liabilityTokenAddress: project.liabilityTokenAddress,
     supplyLiabilityTokenAddress: supplyLiabilityTokenAddress || undefined,
     reserveUrlPrimary: primary?.url ? String(primary.url) : "<set-me>",
-    reserveUrlSecondary: secondary?.url ? String(secondary.url) : "<set-me>",
+    reserveUrlSecondary: secondary?.url ? String(secondary.url) : undefined,
     reserveExpectedSignerAddress: expectedSigner || undefined,
     reserveExpectedSignerAddressPrimary: expectedSignerPrimary || undefined,
     reserveExpectedSignerAddressSecondary: expectedSignerSecondary || undefined,
@@ -444,6 +458,10 @@ export default function OnboardingWizardModal({
   const [useSecondaryFeed, setUseSecondaryFeed] = useState(true)
   const prevConsensusModeRef = useRef(null)
 
+  const [startFrom, setStartFrom] = useState("")
+  const [startFromBusy, setStartFromBusy] = useState(false)
+  const [startFromError, setStartFromError] = useState("")
+
   const [projectForm, setProjectForm] = useState(emptyProject)
   const [connectForm, setConnectForm] = useState({
     primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -493,6 +511,9 @@ export default function OnboardingWizardModal({
     setShowAdvancedPolicy(false)
     setUseSecondaryFeed(true)
     prevConsensusModeRef.current = null
+    setStartFrom("")
+    setStartFromBusy(false)
+    setStartFromError("")
     setProjectForm({ ...emptyProject })
     setConnectForm({
       primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -513,6 +534,94 @@ export default function OnboardingWizardModal({
     setProjectValidateResult(null)
     setOnchainSnapshot(null)
   }, [open])
+
+  const startFromOptions = useMemo(() => {
+    const live = Array.isArray(serverProjects) ? serverProjects.filter((p) => p && normalizeId(p.id)) : []
+    const draft = Array.isArray(draftProjects) ? draftProjects.filter((p) => p && normalizeId(p.id)) : []
+    return {
+      live,
+      draft,
+    }
+  }, [serverProjects, draftProjects])
+
+  useEffect(() => {
+    if (!open) return
+    if (!startFrom) return
+
+    const [kind, pid] = String(startFrom).split(":")
+    const projectId = normalizeId(pid)
+    if (!projectId) return
+
+    setStartFromError("")
+    setStartFromBusy(true)
+
+    void (async () => {
+      try {
+        const live = startFromOptions.live
+        const draft = startFromOptions.draft
+
+        const fromProject =
+          kind === "draft"
+            ? draft.find((p) => normalizeId(p?.id) === projectId) || null
+            : live.find((p) => normalizeId(p?.id) === projectId) || null
+
+        if (!fromProject) throw new Error("Source project not found")
+
+        setTemplateId("custom")
+        setProjectIdTouched(true)
+        setProjectForm({ ...emptyProject, ...fromProject, id: projectId })
+
+        let connectors = []
+        let policy = null
+
+        if (kind === "draft") {
+          connectors = (Array.isArray(draftConnectors) ? draftConnectors : []).filter(
+            (c) => c && normalizeId(c.projectId) === projectId
+          )
+          policy =
+            (Array.isArray(draftPolicies) ? draftPolicies : []).find((p) => p && normalizeId(p.projectId) === projectId) || null
+        } else {
+          const [connectorsRes, policyRes] = await Promise.all([
+            httpGetJson(`/api/connectors?projectId=${encodeURIComponent(projectId)}`, { timeoutMs: 10_000 }),
+            httpGetJson(`/api/policies?projectId=${encodeURIComponent(projectId)}`, { timeoutMs: 10_000 }),
+          ])
+          connectors = Array.isArray(connectorsRes?.connectors) ? connectorsRes.connectors : []
+          policy = policyRes?.policy || null
+        }
+
+        const primary = connectors.find((c) => c && String(c.role || "").trim() === "primary") || null
+        const secondary = connectors.find((c) => c && String(c.role || "").trim() === "secondary") || null
+        const hasSecondary = Boolean(String(secondary?.url || "").trim())
+
+        setUseSecondaryFeed(hasSecondary)
+        setConnectForm({
+          primary: {
+            name: String(primary?.name || "Primary reserve feed"),
+            url: String(primary?.url || ""),
+            expectedSigner: String(primary?.expectedSigner || ""),
+          },
+          secondary: {
+            name: String(secondary?.name || "Secondary reserve feed"),
+            url: String(secondary?.url || ""),
+            expectedSigner: String(secondary?.expectedSigner || ""),
+          },
+        })
+
+        setPolicyForm({
+          consensusMode: String(policy?.consensusMode || "require_match"),
+          minCoverageBps: asText(policy?.minCoverageBps).trim(),
+          maxReserveAgeS: asText(policy?.maxReserveAgeS).trim(),
+          maxMismatchRatio: asText(policy?.maxMismatchRatio).trim(),
+        })
+
+        setTestResult({ primary: null, secondary: null })
+      } catch (err) {
+        setStartFromError(String(err?.message || err))
+      } finally {
+        setStartFromBusy(false)
+      }
+    })()
+  }, [open, startFrom, startFromOptions, draftConnectors, draftPolicies])
 
   useEffect(() => {
     const tpl = TEMPLATES.find((t) => t.id === templateId) || TEMPLATES[0]
@@ -677,12 +786,6 @@ export default function OnboardingWizardModal({
     if (supplyDiffers && !supplyRpcUrl) {
       return "Supply RPC URL is required when supply chain differs"
     }
-
-    const conflictLive = (serverProjects || []).some((p) => normalizeId(p?.id) === id)
-    if (conflictLive) return "That project ID already exists as a live project"
-
-    const conflictDraft = (draftProjects || []).some((p) => normalizeId(p?.id) === id)
-    if (conflictDraft) return "That project ID already exists as a draft"
 
     return ""
   }
@@ -1100,8 +1203,63 @@ export default function OnboardingWizardModal({
             <div className="form">
               <div className="form-grid">
                 <label className="field span-2">
+                  <span className="field-label">Start from existing (optional)</span>
+                  <select
+                    className="text-input"
+                    value={startFrom}
+                    onChange={(e) => {
+                      const v = String(e.target.value || "")
+                      setStartFrom(v)
+                      if (!v) {
+                        setTemplateId("custom")
+                        setProjectIdTouched(false)
+                        setUseSecondaryFeed(true)
+                        prevConsensusModeRef.current = null
+                        setProjectForm({ ...emptyProject })
+                        setConnectForm({
+                          primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
+                          secondary: { name: "Secondary reserve feed", url: "", expectedSigner: "" },
+                        })
+                        setPolicyForm({
+                          consensusMode: "require_match",
+                          minCoverageBps: "",
+                          maxReserveAgeS: "",
+                          maxMismatchRatio: "",
+                        })
+                        setTestResult({ primary: null, secondary: null })
+                        setStartFromError("")
+                      }
+                    }}
+                    disabled={startFromBusy}
+                  >
+                    <option value="">None</option>
+                    <optgroup label="Live projects">
+                      {startFromOptions.live.map((p) => (
+                        <option key={`live:${normalizeId(p?.id)}`} value={`live:${normalizeId(p?.id)}`}>
+                          {normalizeId(p?.id) || "(missing id)"}{p?.name ? ` — ${p.name}` : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Draft projects">
+                      {startFromOptions.draft.map((p) => (
+                        <option key={`draft:${normalizeId(p?.id)}`} value={`draft:${normalizeId(p?.id)}`}>
+                          {normalizeId(p?.id) || "(missing id)"}{p?.name ? ` — ${p.name}` : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </label>
+
+                {startFromError && <div className="form-error span-2">{startFromError}</div>}
+
+                <label className="field span-2">
                   <span className="field-label">Template</span>
-                  <select className="text-input" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                  <select
+                    className="text-input"
+                    value={templateId}
+                    onChange={(e) => setTemplateId(e.target.value)}
+                    disabled={Boolean(startFrom)}
+                  >
                     {TEMPLATES.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.label}
@@ -1120,6 +1278,7 @@ export default function OnboardingWizardModal({
                       setProjectForm((s) => ({ ...s, id: e.target.value }))
                     }}
                     placeholder="reservewatch-sepolia"
+                    disabled={Boolean(startFrom)}
                   />
                 </label>
 
