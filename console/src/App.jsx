@@ -31,9 +31,16 @@ const TABS = [
 
 const ADMIN_KEY = String(import.meta.env?.VITE_RESERVEWATCH_ADMIN_KEY || "").trim()
 
+const STATUS_TIMEOUT_MS = 25000
+
 const fetchJson = async (url, init = {}) => {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), init.timeoutMs || 12000)
+  const timeoutMs = init.timeoutMs || 12000
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
 
   try {
     const method = String(init.method || "GET").toUpperCase()
@@ -50,12 +57,19 @@ const fetchJson = async (url, init = {}) => {
       if (!hasAuth) headers["x-admin-key"] = ADMIN_KEY
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: init.body ? JSON.stringify(init.body) : undefined,
-      signal: controller.signal,
-    })
+    let response
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: init.body ? JSON.stringify(init.body) : undefined,
+        signal: controller.signal,
+      })
+    } catch (err) {
+      if (timedOut) throw new Error(`Request timed out after ${timeoutMs}ms`)
+      if (String(err?.name || "") === "AbortError") throw new Error("Request aborted")
+      throw err
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "")
@@ -457,8 +471,9 @@ export default function App() {
     return projectId || ""
   }, [projectId, selectedLive, selectedDraft])
 
-  const rpcHealthy = !status?.onchain?.error
-  const rpcBlock = status?.onchain?.blockNumber
+  const hasStatus = Boolean(status)
+  const rpcHealthy = hasStatus && !status?.onchain?.error
+  const rpcBlock = hasStatus ? status?.onchain?.blockNumber : null
 
   const loadProjects = useCallback(async () => {
     const urlProject = fromUrlProject()
@@ -512,7 +527,7 @@ export default function App() {
     setPublicBusy(true)
     try {
       const [statusRes, projectsRes] = await Promise.all([
-        fetchJson(`/api/status?project=${encodeURIComponent(pid)}`, { timeoutMs: 12000 }),
+        fetchJson(`/api/status?project=${encodeURIComponent(pid)}`, { timeoutMs: STATUS_TIMEOUT_MS }),
         fetchJson("/api/projects", { timeoutMs: 8000 }).catch(() => null),
       ])
       const list = Array.isArray(projectsRes?.projects) ? projectsRes.projects : []
@@ -568,9 +583,9 @@ export default function App() {
         forceHistory || (wantsHistory && (Date.now() - lastHistoryFetch > HISTORY_SWR_MS || !cachedHistory))
 
       const requests = [
-        fetchJson(`/api/status${query}`, { timeoutMs: 12000 }),
+        fetchJson(`/api/status${query}`, { timeoutMs: STATUS_TIMEOUT_MS }),
         shouldFetchHistory
-          ? fetchJson(`/api/history${query ? `${query}&limit=50` : "?limit=50"}`, { timeoutMs: 12000 })
+          ? fetchJson(`/api/history${query ? `${query}&limit=50` : "?limit=50"}`, { timeoutMs: STATUS_TIMEOUT_MS })
           : Promise.resolve(null),
       ]
 
@@ -1231,8 +1246,8 @@ export default function App() {
           {effectiveBusy && <span className="env-pill env-mode">Syncing…</span>}
           {projectId && <span className="env-pill env-mode">Mode: {status?.mode || "--"}</span>}
           {projectId && (
-            <span className={`env-pill ${rpcHealthy ? "env-ok" : "env-bad"}`}>
-              RPC: {rpcHealthy ? (rpcBlock ? `ok @ ${rpcBlock}` : "ok") : "error"}
+            <span className={`env-pill ${!hasStatus ? "env-mode" : rpcHealthy ? "env-ok" : "env-bad"}`}>
+              RPC: {!hasStatus ? "--" : rpcHealthy ? (rpcBlock ? `ok @ ${rpcBlock}` : "ok") : "error"}
             </span>
           )}
           {!isLiveProject && projectId && <span className="env-pill env-warn">Not deployed</span>}

@@ -83,6 +83,45 @@ const asText = (value) => {
 
 const jsonStableStringify = (obj) => JSON.stringify(obj, null, 2)
 
+const toProjectIdSlug = (value) => {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+  if (!raw) return ""
+  const cleaned = raw
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-/, "")
+    .replace(/-$/, "")
+  if (!cleaned) return ""
+  const clipped = cleaned.slice(0, 63)
+  if (clipped.length >= 2) return clipped
+  return `${clipped}1`
+}
+
+const TEMPLATES = [
+  {
+    id: "custom",
+    label: "Custom",
+    project: {},
+    policy: {},
+  },
+  {
+    id: "sepolia",
+    label: "Sepolia",
+    project: {
+      chainSelectorName: "ethereum-testnet-sepolia",
+      explorerBaseUrl: "https://sepolia.etherscan.io",
+      rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
+    },
+    policy: {
+      consensusMode: "require_match",
+      maxReserveAgeS: "120",
+      maxMismatchRatio: "0.01",
+    },
+  },
+]
+
 const downloadText = (filename, content, contentType = "application/json") => {
   try {
     const blob = new Blob([content], { type: contentType })
@@ -396,6 +435,12 @@ export default function OnboardingWizardModal({
   const [stepIdx, setStepIdx] = useState(0)
   const step = steps[stepIdx]?.id || "project"
 
+  const [templateId, setTemplateId] = useState("custom")
+  const [projectIdTouched, setProjectIdTouched] = useState(false)
+
+  const [showAdvancedProject, setShowAdvancedProject] = useState(false)
+  const [showAdvancedPolicy, setShowAdvancedPolicy] = useState(false)
+
   const [projectForm, setProjectForm] = useState(emptyProject)
   const [connectForm, setConnectForm] = useState({
     primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -439,6 +484,10 @@ export default function OnboardingWizardModal({
   useEffect(() => {
     if (!open) return
     setStepIdx(0)
+    setTemplateId("custom")
+    setProjectIdTouched(false)
+    setShowAdvancedProject(false)
+    setShowAdvancedPolicy(false)
     setProjectForm({ ...emptyProject })
     setConnectForm({
       primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -459,6 +508,29 @@ export default function OnboardingWizardModal({
     setProjectValidateResult(null)
     setOnchainSnapshot(null)
   }, [open])
+
+  useEffect(() => {
+    const tpl = TEMPLATES.find((t) => t.id === templateId) || TEMPLATES[0]
+    if (!tpl) return
+
+    setProjectForm((s) => {
+      const next = { ...s }
+      for (const [k, v] of Object.entries(tpl.project || {})) {
+        if (String(next?.[k] || "").trim()) continue
+        next[k] = v
+      }
+      return next
+    })
+
+    setPolicyForm((s) => {
+      const next = { ...s }
+      for (const [k, v] of Object.entries(tpl.policy || {})) {
+        if (String(next?.[k] || "").trim()) continue
+        next[k] = v
+      }
+      return next
+    })
+  }, [templateId])
 
   const draftProjectId = normalizeId(projectForm.id)
 
@@ -992,12 +1064,26 @@ export default function OnboardingWizardModal({
           {step === "project" && (
             <div className="form">
               <div className="form-grid">
+                <label className="field span-2">
+                  <span className="field-label">Template</span>
+                  <select className="text-input" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                    {TEMPLATES.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
                 <label className="field">
                   <span className="field-label">Project ID</span>
                   <input
                     className="text-input"
                     value={projectForm.id}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, id: e.target.value }))}
+                    onChange={(e) => {
+                      setProjectIdTouched(true)
+                      setProjectForm((s) => ({ ...s, id: e.target.value }))
+                    }}
                     placeholder="reservewatch-sepolia"
                   />
                 </label>
@@ -1007,7 +1093,14 @@ export default function OnboardingWizardModal({
                   <input
                     className="text-input"
                     value={projectForm.name}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, name: e.target.value }))}
+                    onChange={(e) => {
+                      const name = e.target.value
+                      setProjectForm((s) => {
+                        const next = { ...s, name }
+                        if (!projectIdTouched) next.id = toProjectIdSlug(name)
+                        return next
+                      })
+                    }}
                     placeholder="My Asset"
                   />
                 </label>
@@ -1042,26 +1135,6 @@ export default function OnboardingWizardModal({
                   />
                 </label>
 
-                <label className="field">
-                  <span className="field-label">Supply chain selector (optional)</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.supplyChainSelectorName}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyChainSelectorName: e.target.value }))}
-                    placeholder="leave blank to use attestation chain"
-                  />
-                </label>
-
-                <label className="field span-2">
-                  <span className="field-label">Supply RPC URL (optional)</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.supplyRpcUrl}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyRpcUrl: e.target.value }))}
-                    placeholder="leave blank to use attestation RPC"
-                  />
-                </label>
-
                 <label className="field span-2">
                   <span className="field-label">Explorer base URL</span>
                   <input
@@ -1092,45 +1165,75 @@ export default function OnboardingWizardModal({
                   />
                 </label>
 
-                <label className="field span-2">
-                  <span className="field-label">Supply token address (optional)</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.supplyLiabilityTokenAddress}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, supplyLiabilityTokenAddress: e.target.value }))}
-                    placeholder="leave blank to use liability token"
-                  />
-                </label>
+                <div className="form-actions" style={{ justifyContent: "flex-start" }}>
+                  <button className="btn btn-ghost" type="button" onClick={() => setShowAdvancedProject((s) => !s)}>
+                    {showAdvancedProject ? "Hide advanced" : "Show advanced"}
+                  </button>
+                </div>
 
-                <label className="field span-2">
-                  <span className="field-label">Expected forwarder (optional)</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.expectedForwarderAddress}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, expectedForwarderAddress: e.target.value }))}
-                    placeholder="0x..."
-                  />
-                </label>
+                {showAdvancedProject && (
+                  <>
+                    <label className="field">
+                      <span className="field-label">Supply chain selector (optional)</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.supplyChainSelectorName}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, supplyChainSelectorName: e.target.value }))}
+                        placeholder="leave blank to use attestation chain"
+                      />
+                    </label>
 
-                <label className="field">
-                  <span className="field-label">Max reserve age (s)</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.maxReserveAgeS}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, maxReserveAgeS: e.target.value }))}
-                    placeholder="3600"
-                  />
-                </label>
+                    <label className="field span-2">
+                      <span className="field-label">Supply RPC URL (optional)</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.supplyRpcUrl}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, supplyRpcUrl: e.target.value }))}
+                        placeholder="leave blank to use attestation RPC"
+                      />
+                    </label>
 
-                <label className="field">
-                  <span className="field-label">Max mismatch ratio</span>
-                  <input
-                    className="text-input"
-                    value={projectForm.maxReserveMismatchRatio}
-                    onChange={(e) => setProjectForm((s) => ({ ...s, maxReserveMismatchRatio: e.target.value }))}
-                    placeholder="0.02"
-                  />
-                </label>
+                    <label className="field span-2">
+                      <span className="field-label">Supply token address (optional)</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.supplyLiabilityTokenAddress}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, supplyLiabilityTokenAddress: e.target.value }))}
+                        placeholder="leave blank to use liability token"
+                      />
+                    </label>
+
+                    <label className="field span-2">
+                      <span className="field-label">Expected forwarder (optional)</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.expectedForwarderAddress}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, expectedForwarderAddress: e.target.value }))}
+                        placeholder="0x..."
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span className="field-label">Max reserve age (s)</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.maxReserveAgeS}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, maxReserveAgeS: e.target.value }))}
+                        placeholder="3600"
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span className="field-label">Max mismatch ratio</span>
+                      <input
+                        className="text-input"
+                        value={projectForm.maxReserveMismatchRatio}
+                        onChange={(e) => setProjectForm((s) => ({ ...s, maxReserveMismatchRatio: e.target.value }))}
+                        placeholder="0.02"
+                      />
+                    </label>
+                  </>
+                )}
               </div>
 
               <div className="form-actions">
@@ -1295,25 +1398,35 @@ export default function OnboardingWizardModal({
                   />
                 </label>
 
-                <label className="field">
-                  <span className="field-label">Max reserve age (s)</span>
-                  <input
-                    className="text-input"
-                    value={policyForm.maxReserveAgeS}
-                    onChange={(e) => setPolicyForm((s) => ({ ...s, maxReserveAgeS: e.target.value }))}
-                    placeholder={asText(projectForm.maxReserveAgeS) || "120"}
-                  />
-                </label>
+                <div className="form-actions" style={{ justifyContent: "flex-start" }}>
+                  <button className="btn btn-ghost" type="button" onClick={() => setShowAdvancedPolicy((s) => !s)}>
+                    {showAdvancedPolicy ? "Hide advanced" : "Show advanced"}
+                  </button>
+                </div>
 
-                <label className="field">
-                  <span className="field-label">Max mismatch ratio</span>
-                  <input
-                    className="text-input"
-                    value={policyForm.maxMismatchRatio}
-                    onChange={(e) => setPolicyForm((s) => ({ ...s, maxMismatchRatio: e.target.value }))}
-                    placeholder={asText(projectForm.maxReserveMismatchRatio) || "0.01"}
-                  />
-                </label>
+                {showAdvancedPolicy && (
+                  <>
+                    <label className="field">
+                      <span className="field-label">Max reserve age (s)</span>
+                      <input
+                        className="text-input"
+                        value={policyForm.maxReserveAgeS}
+                        onChange={(e) => setPolicyForm((s) => ({ ...s, maxReserveAgeS: e.target.value }))}
+                        placeholder={asText(projectForm.maxReserveAgeS) || "120"}
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span className="field-label">Max mismatch ratio</span>
+                      <input
+                        className="text-input"
+                        value={policyForm.maxMismatchRatio}
+                        onChange={(e) => setPolicyForm((s) => ({ ...s, maxMismatchRatio: e.target.value }))}
+                        placeholder={asText(projectForm.maxReserveMismatchRatio) || "0.01"}
+                      />
+                    </label>
+                  </>
+                )}
               </div>
 
               {(() => {
