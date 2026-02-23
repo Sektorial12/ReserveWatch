@@ -441,6 +441,9 @@ export default function OnboardingWizardModal({
   const [showAdvancedProject, setShowAdvancedProject] = useState(false)
   const [showAdvancedPolicy, setShowAdvancedPolicy] = useState(false)
 
+  const [useSecondaryFeed, setUseSecondaryFeed] = useState(true)
+  const prevConsensusModeRef = useRef(null)
+
   const [projectForm, setProjectForm] = useState(emptyProject)
   const [connectForm, setConnectForm] = useState({
     primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -488,6 +491,8 @@ export default function OnboardingWizardModal({
     setProjectIdTouched(false)
     setShowAdvancedProject(false)
     setShowAdvancedPolicy(false)
+    setUseSecondaryFeed(true)
+    prevConsensusModeRef.current = null
     setProjectForm({ ...emptyProject })
     setConnectForm({
       primary: { name: "Primary reserve feed", url: "", expectedSigner: "" },
@@ -532,6 +537,32 @@ export default function OnboardingWizardModal({
     })
   }, [templateId])
 
+  useEffect(() => {
+    if (useSecondaryFeed) {
+      if (policyForm.consensusMode === "primary_only" && prevConsensusModeRef.current) {
+        const next = String(prevConsensusModeRef.current || "").trim()
+        if (next && next !== "primary_only") {
+          setPolicyForm((s) => ({ ...s, consensusMode: next }))
+        }
+      }
+      return
+    }
+
+    if (policyForm.consensusMode && policyForm.consensusMode !== "primary_only") {
+      prevConsensusModeRef.current = policyForm.consensusMode
+    }
+    setPolicyForm((s) => ({ ...s, consensusMode: "primary_only" }))
+    setConnectForm((s) => ({
+      ...s,
+      secondary: {
+        ...s.secondary,
+        url: "",
+        expectedSigner: "",
+      },
+    }))
+    setTestResult((s) => ({ ...s, secondary: null }))
+  }, [useSecondaryFeed, policyForm.consensusMode])
+
   const draftProjectId = normalizeId(projectForm.id)
 
   const localConnectors = useMemo(() => {
@@ -558,8 +589,9 @@ export default function OnboardingWizardModal({
       expectedSigner: String(connectForm.secondary?.expectedSigner || "").trim(),
     }
 
-    return [primary, secondary].filter((c) => c.url)
-  }, [connectForm, projectForm.id])
+    const arr = useSecondaryFeed ? [primary, secondary] : [primary]
+    return arr.filter((c) => c.url)
+  }, [connectForm, projectForm.id, useSecondaryFeed])
 
   const localPolicy = useMemo(() => {
     const pid = normalizeId(projectForm.id)
@@ -664,16 +696,19 @@ export default function OnboardingWizardModal({
     const primaryName = String(connectForm.primary?.name || "").trim()
     if (!primaryName) return "Primary reserve feed name is required"
 
-    const secondaryUrl = String(connectForm.secondary?.url || "").trim()
-    if (!secondaryUrl) return "Secondary reserve feed URL is required"
-
-    const secondaryName = String(connectForm.secondary?.name || "").trim()
-    if (!secondaryName) return "Secondary reserve feed name is required"
-
     if (!testResult?.primary) return "Run the primary Test before continuing"
-    if (!testResult?.secondary) return "Run the secondary Test before continuing"
     if (testResult?.primary?.ok !== true) return "Primary test must pass before continuing"
-    if (testResult?.secondary?.ok !== true) return "Secondary test must pass before continuing"
+
+    if (useSecondaryFeed) {
+      const secondaryUrl = String(connectForm.secondary?.url || "").trim()
+      if (!secondaryUrl) return "Secondary reserve feed URL is required"
+
+      const secondaryName = String(connectForm.secondary?.name || "").trim()
+      if (!secondaryName) return "Secondary reserve feed name is required"
+
+      if (!testResult?.secondary) return "Run the secondary Test before continuing"
+      if (testResult?.secondary?.ok !== true) return "Secondary test must pass before continuing"
+    }
 
     return ""
   }
@@ -1255,121 +1290,141 @@ export default function OnboardingWizardModal({
           )}
 
           {step === "connect" && (
-            <div className="modal-split">
-              <div className="modal-pane">
-                <div className="pane-header">
-                  <h3 className="pane-title">Primary reserve feed</h3>
-                  <button
-                    className="btn btn-ok"
-                    disabled={!String(connectForm.primary?.url || "").trim() || testBusy === "primary"}
-                    onClick={() => void testConnection("primary")}
-                  >
-                    {testBusy === "primary" ? "Testing..." : "Test"}
-                  </button>
-                </div>
-
-                <div className="form">
-                  <div className="form-grid">
-                    <label className="field span-2">
-                      <span className="field-label">Name</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.primary.name}
-                        onChange={(e) => setConnectForm((s) => ({ ...s, primary: { ...s.primary, name: e.target.value } }))}
-                        placeholder="Primary reserve feed"
-                      />
-                    </label>
-
-                    <label className="field span-2">
-                      <span className="field-label">URL</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.primary.url}
-                        onChange={(e) => setConnectForm((s) => ({ ...s, primary: { ...s.primary, url: e.target.value } }))}
-                        placeholder="https://..."
-                      />
-                    </label>
-
-                    <label className="field span-2">
-                      <span className="field-label">Expected signer (optional)</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.primary.expectedSigner}
-                        onChange={(e) =>
-                          setConnectForm((s) => ({ ...s, primary: { ...s.primary, expectedSigner: e.target.value } }))
-                        }
-                        placeholder="0x..."
-                      />
-                    </label>
-                  </div>
-
-                  {testResult.primary && (
-                    <div className={testResult.primary.ok ? "wizard-test ok" : "wizard-test bad"}>
-                      {testResult.primary.ok ? "Test ok" : "Test failed"} · {testResult.primary.message}
-                    </div>
-                  )}
-                </div>
+            <>
+              <div className="form-actions" style={{ justifyContent: "flex-start", marginBottom: 12 }}>
+                <button className="btn btn-ghost" type="button" onClick={() => setUseSecondaryFeed((s) => !s)}>
+                  {useSecondaryFeed ? "Disable secondary feed" : "Enable secondary feed"}
+                </button>
               </div>
 
-              <div className="modal-pane">
-                <div className="pane-header">
-                  <h3 className="pane-title">Secondary reserve feed</h3>
-                  <button
-                    className="btn btn-ok"
-                    disabled={!String(connectForm.secondary?.url || "").trim() || testBusy === "secondary"}
-                    onClick={() => void testConnection("secondary")}
-                  >
-                    {testBusy === "secondary" ? "Testing..." : "Test"}
-                  </button>
-                </div>
-
-                <div className="form">
-                  <div className="form-grid">
-                    <label className="field span-2">
-                      <span className="field-label">Name</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.secondary.name}
-                        onChange={(e) =>
-                          setConnectForm((s) => ({ ...s, secondary: { ...s.secondary, name: e.target.value } }))
-                        }
-                        placeholder="Secondary reserve feed"
-                      />
-                    </label>
-
-                    <label className="field span-2">
-                      <span className="field-label">URL</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.secondary.url}
-                        onChange={(e) =>
-                          setConnectForm((s) => ({ ...s, secondary: { ...s.secondary, url: e.target.value } }))
-                        }
-                        placeholder="https://..."
-                      />
-                    </label>
-
-                    <label className="field span-2">
-                      <span className="field-label">Expected signer (optional)</span>
-                      <input
-                        className="text-input"
-                        value={connectForm.secondary.expectedSigner}
-                        onChange={(e) =>
-                          setConnectForm((s) => ({ ...s, secondary: { ...s.secondary, expectedSigner: e.target.value } }))
-                        }
-                        placeholder="0x..."
-                      />
-                    </label>
+              <div className="modal-split">
+                <div className="modal-pane">
+                  <div className="pane-header">
+                    <h3 className="pane-title">Primary reserve feed</h3>
+                    <button
+                      className="btn btn-ok"
+                      disabled={!String(connectForm.primary?.url || "").trim() || testBusy === "primary"}
+                      onClick={() => void testConnection("primary")}
+                    >
+                      {testBusy === "primary" ? "Testing..." : "Test"}
+                    </button>
                   </div>
 
-                  {testResult.secondary && (
-                    <div className={testResult.secondary.ok ? "wizard-test ok" : "wizard-test bad"}>
-                      {testResult.secondary.ok ? "Test ok" : "Test failed"} · {testResult.secondary.message}
+                  <div className="form">
+                    <div className="form-grid">
+                      <label className="field span-2">
+                        <span className="field-label">Name</span>
+                        <input
+                          className="text-input"
+                          value={connectForm.primary.name}
+                          onChange={(e) =>
+                            setConnectForm((s) => ({ ...s, primary: { ...s.primary, name: e.target.value } }))
+                          }
+                          placeholder="Primary reserve feed"
+                        />
+                      </label>
+
+                      <label className="field span-2">
+                        <span className="field-label">URL</span>
+                        <input
+                          className="text-input"
+                          value={connectForm.primary.url}
+                          onChange={(e) =>
+                            setConnectForm((s) => ({ ...s, primary: { ...s.primary, url: e.target.value } }))
+                          }
+                          placeholder="https://..."
+                        />
+                      </label>
+
+                      <label className="field span-2">
+                        <span className="field-label">Expected signer (optional)</span>
+                        <input
+                          className="text-input"
+                          value={connectForm.primary.expectedSigner}
+                          onChange={(e) =>
+                            setConnectForm((s) => ({
+                              ...s,
+                              primary: { ...s.primary, expectedSigner: e.target.value },
+                            }))
+                          }
+                          placeholder="0x..."
+                        />
+                      </label>
                     </div>
-                  )}
+
+                    {testResult.primary && (
+                      <div className={testResult.primary.ok ? "wizard-test ok" : "wizard-test bad"}>
+                        {testResult.primary.ok ? "Test ok" : "Test failed"} · {testResult.primary.message}
+                      </div>
+                    )}
+                  </div>
                 </div>
+
+                {useSecondaryFeed && (
+                  <div className="modal-pane">
+                    <div className="pane-header">
+                      <h3 className="pane-title">Secondary reserve feed</h3>
+                      <button
+                        className="btn btn-ok"
+                        disabled={!String(connectForm.secondary?.url || "").trim() || testBusy === "secondary"}
+                        onClick={() => void testConnection("secondary")}
+                      >
+                        {testBusy === "secondary" ? "Testing..." : "Test"}
+                      </button>
+                    </div>
+
+                    <div className="form">
+                      <div className="form-grid">
+                        <label className="field span-2">
+                          <span className="field-label">Name</span>
+                          <input
+                            className="text-input"
+                            value={connectForm.secondary.name}
+                            onChange={(e) =>
+                              setConnectForm((s) => ({ ...s, secondary: { ...s.secondary, name: e.target.value } }))
+                            }
+                            placeholder="Secondary reserve feed"
+                          />
+                        </label>
+
+                        <label className="field span-2">
+                          <span className="field-label">URL</span>
+                          <input
+                            className="text-input"
+                            value={connectForm.secondary.url}
+                            onChange={(e) =>
+                              setConnectForm((s) => ({ ...s, secondary: { ...s.secondary, url: e.target.value } }))
+                            }
+                            placeholder="https://..."
+                          />
+                        </label>
+
+                        <label className="field span-2">
+                          <span className="field-label">Expected signer (optional)</span>
+                          <input
+                            className="text-input"
+                            value={connectForm.secondary.expectedSigner}
+                            onChange={(e) =>
+                              setConnectForm((s) => ({
+                                ...s,
+                                secondary: { ...s.secondary, expectedSigner: e.target.value },
+                              }))
+                            }
+                            placeholder="0x..."
+                          />
+                        </label>
+                      </div>
+
+                      {testResult.secondary && (
+                        <div className={testResult.secondary.ok ? "wizard-test ok" : "wizard-test bad"}>
+                          {testResult.secondary.ok ? "Test ok" : "Test failed"} · {testResult.secondary.message}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            </>
           )}
 
           {step === "policy" && (
@@ -1380,6 +1435,7 @@ export default function OnboardingWizardModal({
                   <select
                     className="text-input"
                     value={policyForm.consensusMode}
+                    disabled={!useSecondaryFeed}
                     onChange={(e) => setPolicyForm((s) => ({ ...s, consensusMode: e.target.value }))}
                   >
                     <option value="primary_only">Primary only</option>
