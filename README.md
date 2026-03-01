@@ -6,6 +6,8 @@ Real-time Proof of Reserves monitoring with automatic onchain enforcement for to
 
 ![ReserveWatch](https://img.shields.io/badge/Chainlink-CRE-blue) ![Solidity](https://img.shields.io/badge/Solidity-0.8.x-green) ![React](https://img.shields.io/badge/React-18-61dafb) ![Sepolia](https://img.shields.io/badge/Network-Sepolia-purple)
 
+**[Architecture Diagrams](./ARCHITECTURE.md)** | **[Demo Runbook](./DEMO.md)** | **[CRE Research](./docs/cre-research-notes.md)**
+
 ## Overview
 
 ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Value (NAV) monitoring system for tokenized RWAs. It uses **Chainlink Compute Runtime Environment (CRE)** to orchestrate automated reserve verification and enforcement.
@@ -18,16 +20,21 @@ ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Val
 
 ### How It Works
 
+```mermaid
+flowchart LR
+    A[1. Fetch Reserves] --> B[2. Compute Coverage]
+    B --> C[3. Attest Onchain]
+    C --> D[4. Enforce Policy]
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  1. Fetch       │    │  2. Compute     │    │  3. Attest      │    │  4. Enforce     │
-│  Reserves       │───▶│  Coverage       │───▶│  Onchain        │───▶│  Policy         │
-│                 │    │                 │    │                 │    │                 │
-│  CRE fetches    │    │  Calculate      │    │  Signed report  │    │  If coverage <  │
-│  from custodian │    │  reserves /     │    │  written to     │    │  threshold,     │
-│  APIs           │    │  liabilities    │    │  receiver       │    │  pause minting  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+
+| Step | Description |
+|------|-------------|
+| **Fetch Reserves** | CRE workflow fetches reserve balances from custodian APIs |
+| **Compute Coverage** | Calculate coverage ratio: reserves / liabilities (in basis points) |
+| **Attest Onchain** | Signed attestation written to ReserveWatchReceiver contract |
+| **Enforce Policy** | If coverage < threshold, circuit breaker pauses token minting |
+
+> See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed Mermaid diagrams
 
 ## Tech Stack
 
@@ -41,32 +48,15 @@ ReserveWatch is an institutional-grade Proof of Reserves (PoR) and Net Asset Val
 
 ## Repository Layout
 
-```
-ReserveWatch/
-├── console/                    # React + Vite operator console
-│   ├── src/
-│   │   ├── components/         # UI components (LandingPage, Tabs, etc.)
-│   │   ├── App.jsx             # Main application
-│   │   └── styles.css          # Dark theme styles
-│   └── package.json
-├── contracts/
-│   ├── evm/src/                # Solidity contracts
-│   │   ├── ReserveWatchReceiver.sol
-│   │   └── LiabilityToken.sol
-│   └── abi/                    # TypeScript ABIs for workflow
-├── reservewatch-workflow/      # CRE TypeScript workflow
-│   ├── main.ts                 # Workflow logic
-│   ├── config.staging.json     # Staging configuration
-│   └── workflow.yaml           # CRE workflow definition
-├── server/                     # API server + console hosting
-│   ├── index.js                # Express server
-│   ├── projects.json           # Project configuration
-│   └── public/                 # Built console assets
-├── docs/                       # Documentation
-│   ├── cre-research-notes.md
-│   └── contract-gaps.md
-└── scripts/                    # Demo and deployment scripts
-```
+| Directory | Description |
+|-----------|-------------|
+| `console/` | React 18 + Vite operator console with dark theme |
+| `contracts/evm/` | Solidity smart contracts (ReserveWatchReceiver, LiabilityToken) |
+| `contracts/abi/` | TypeScript ABIs for workflow integration |
+| `reservewatch-workflow/` | CRE TypeScript workflow (main.ts, workflow.yaml) |
+| `server/` | Express API server + static console hosting |
+| `docs/` | Research notes and contract gap analysis |
+| `scripts/` | Demo runner and deployment scripts |
 
 ## Target Chain
 - Ethereum Sepolia (Chainlink CRE default)
@@ -193,6 +183,17 @@ From the repo root:
 
 If you have a proxy configured in your shell environment, you may need:
 - `curl --noproxy '*' ...`
+
+## Why Chainlink CRE?
+
+| Benefit | How ReserveWatch Uses It |
+|---------|--------------------------|
+| **Decentralization** | Multiple DON nodes verify reserve data with BFT consensus |
+| **HTTP Capability** | Fetch reserve balances from offchain custodian APIs |
+| **EVM Read** | Read token supply (liabilities) directly from chain |
+| **EVM Write** | Write signed attestations to receiver contract |
+| **Cron Triggers** | Automated 60-second monitoring interval |
+| **Institutional Grade** | Cryptographic verification and tamper-proof reports |
 
 ## Chainlink CRE Integration
 
