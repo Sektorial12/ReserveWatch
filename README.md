@@ -197,11 +197,16 @@ If you have a proxy configured in your shell environment, you may need:
 
 ## Chainlink CRE Integration
 
-| File | Purpose |
-|------|---------|
-| `reservewatch-workflow/main.ts` | Core workflow logic (fetch, compute, attest) |
-| `reservewatch-workflow/workflow.yaml` | CRE workflow configuration |
-| `project.yaml` | RPC and chain configuration |
+### Files That Use Chainlink
+
+| File | Purpose | Chainlink Components Used |
+|------|---------|---------------------------|
+| [`reservewatch-workflow/main.ts`](./reservewatch-workflow/main.ts) | Core workflow logic | `@chainlink/cre-sdk`: CronCapability, EVMClient, HTTPClient, Runner, handler |
+| [`reservewatch-workflow/workflow.yaml`](./reservewatch-workflow/workflow.yaml) | CRE workflow configuration | Workflow triggers, capabilities, settings |
+| [`project.yaml`](./project.yaml) | RPC and chain configuration | Network settings for CRE |
+| [`contracts/evm/src/ReserveWatchReceiver.sol`](./contracts/evm/src/ReserveWatchReceiver.sol) | Receives CRE attestations | Implements `onReport()` for DON reports |
+| [`contracts/abi/ReserveWatchReceiver.ts`](./contracts/abi/ReserveWatchReceiver.ts) | ABI for workflow | Used by CRE workflow for EVM calls |
+| [`contracts/abi/LiabilityToken.ts`](./contracts/abi/LiabilityToken.ts) | ABI for workflow | Used by CRE workflow for EVM reads |
 
 ## Smart Contracts
 
