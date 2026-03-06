@@ -172,14 +172,14 @@ flowchart TB
         SRV[Server]
         
         subgraph APIs["API Endpoints"]
-            AS[/api/status]
-            AH[/api/history]
-            AP[/api/projects]
+            AS["GET /api/status"]
+            AH["GET /api/history"]
+            AP["GET /api/projects"]
         end
 
         subgraph Admin["Admin Endpoints"]
-            AM[/admin/mode]
-            AI[/admin/incident]
+            AM["POST /admin/mode"]
+            AI["POST /admin/incident"]
         end
 
         SRV --> APIs
@@ -248,24 +248,34 @@ flowchart TB
 ## Why Chainlink CRE?
 
 ```mermaid
-mindmap
-    root((ReserveWatch + CRE))
-        Decentralization
-            Multiple DON nodes
-            BFT consensus
-            No single point of failure
-        Capabilities
-            HTTP for offchain data
-            EVM Read for liabilities
-            EVM Write for attestations
-        Orchestration
-            Cron triggers
-            Multi-step workflows
-            Conditional logic
-        Security
-            Cryptographic verification
-            Tamper-proof reports
-            Institutional grade
+flowchart TB
+    subgraph CRE["ReserveWatch + Chainlink CRE"]
+        direction TB
+        
+        subgraph D["Decentralization"]
+            D1[Multiple DON nodes]
+            D2[BFT consensus]
+            D3[No single point of failure]
+        end
+        
+        subgraph C["Capabilities"]
+            C1[HTTP for offchain data]
+            C2[EVM Read for liabilities]
+            C3[EVM Write for attestations]
+        end
+        
+        subgraph O["Orchestration"]
+            O1[Cron triggers]
+            O2[Multi-step workflows]
+            O3[Conditional logic]
+        end
+        
+        subgraph S["Security"]
+            S1[Cryptographic verification]
+            S2[Tamper-proof reports]
+            S3[Institutional grade]
+        end
+    end
 ```
 
 ---
