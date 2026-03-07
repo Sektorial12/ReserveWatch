@@ -109,8 +109,6 @@ node scripts/demo.mjs --broadcast --api http://127.0.0.1:8787 --project reservew
 cre workflow simulate reservewatch-workflow --target staging-settings --broadcast --env .env
 ```
 
-See `DEMO.md` for a detailed step-by-step runbook.
-
 ## Local run (simulation)
 
 ### 1) Reserve API (external data source)
